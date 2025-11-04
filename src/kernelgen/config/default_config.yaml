@@ -1,0 +1,71 @@
+# KernelGen 默认配置文件
+
+# DeepSeek API配置
+deepseek_api:
+  model: "deepseek-chat"
+  api_key: null  # 从环境变量DEEPSEEK_API_KEY获取
+  api_base: "https://api.deepseek.com"
+  temperature: 0.1
+  max_tokens: 4000
+  timeout: 60
+
+# 验证配置
+verification:
+  num_warmup: 10      # 性能测试预热次数
+  num_runs: 100       # 性能测试运行次数
+  timeout: 300        # 验证超时时间（秒）
+  enable_syntax_check: true
+  enable_compile_check: true
+  enable_function_test: true
+  enable_performance_test: true
+
+# 生成配置
+generation:
+  max_iterations: 5                    # 最大迭代次数
+  enable_performance_test: true        # 是否启用性能测试
+  enable_functionality_test: true     # 是否启用功能测试
+  early_stop_on_success: true         # 成功后是否提前停止
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: null  # 如果设置，日志将写入文件
+
+# Agent配置
+agents:
+  designer:
+    temperature: 0.1
+    max_tokens: 3000
+  coder:
+    temperature: 0.05
+    max_tokens: 4000
+  conductor:
+    temperature: 0.2
+    max_tokens: 2000
+
+# 性能基准
+performance_thresholds:
+  min_throughput_gflops: 50.0    # 最小吞吐量要求
+  max_latency_ms: 10.0           # 最大延迟要求
+  memory_efficiency: 0.8         # 内存效率要求
+
+# 性能调优配置
+performance_tuning:
+  warmup_runs: 10               # 预热运行次数
+  benchmark_runs: 100           # 基准测试运行次数
+  block_sizes: [32, 64, 128, 256, 512, 1024]  # 测试的block size范围
+  enable_auto_tuning: true      # 是否启用自动调优
+  optimization_targets: ["latency", "throughput"]  # 优化目标
+
+# 精度验证配置
+accuracy_validation:
+  rtol: 1e-5                    # 相对误差容忍度
+  atol: 1e-8                    # 绝对误差容忍度
+  test_cases: 10                # 测试用例数量
+  enable_boundary_tests: true   # 是否启用边界测试
+  enable_stability_tests: true  # 是否启用数值稳定性测试
+
+# 验证器配置
+enable_performance_tuning: true     # 是否启用性能调优
+enable_accuracy_validation: true   # 是否启用精度验证

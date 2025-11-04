@@ -1,0 +1,50 @@
+# KernelGen Configuration File
+# 统一配置文件，控制所有生成和评估参数
+
+# 数据集配置
+dataset:
+  source: "huggingface"  # huggingface 或 local
+  name: "ScalingIntelligence/KernelBench"
+  level: 2  # 1, 2, 3, 4
+  problem_ids: [40, 41, 42]  # 指定问题ID，空列表表示所有问题
+
+# 生成配置
+generation:
+  max_iterations: 20  # 最大迭代次数
+  early_stop_threshold: 1.2  # 加速比阈值，达到后提前停止
+  min_successful_iterations: 3  # 最少成功迭代次数
+  backend: "triton"  # triton, cuda
+  
+  # LLM配置
+  llm:
+    server_type: "deepseek"
+    model_name: "deepseek-coder"
+    temperature: 0.0
+    max_tokens: 4096
+    
+# 性能测试配置
+performance:
+  device: "cuda"
+  warmup_runs: 10
+  benchmark_runs: 100
+  timeout: 180  # 超时时间（秒）
+  
+# 输出配置
+output:
+  base_dir: "runs"  # 基础输出目录
+  run_name: "kernelgen_run"  # 运行名称
+  save_all_kernels: true  # 保存所有生成的kernel
+  save_best_only: false  # 仅保存最佳kernel
+  save_logs: true
+  save_performance_data: true
+
+# 评估配置
+evaluation:
+  num_correct_trials: 5  # 正确性测试次数
+  num_perf_trials: 100   # 性能测试次数
+  pass_at_k_values: [1, 5, 10]  # pass@k计算的k值
+  
+# 并发配置
+concurrency:
+  num_workers: 4  # 并发worker数量
+  api_query_interval: 0.1  # API查询间隔（秒）

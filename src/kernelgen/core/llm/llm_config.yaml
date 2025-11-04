@@ -1,0 +1,29 @@
+# LLM模型配置文件
+
+# DeepSeek模型配置
+deepseek_default:
+  model: "deepseek-chat"
+  api_base: "https://api.deepseek.com"
+  temperature: 0.1
+  max_tokens: 4000
+  timeout: 60
+
+deepseek_coder:
+  model: "deepseek-coder"
+  api_base: "https://api.deepseek.com"
+  temperature: 0.05
+  max_tokens: 8000
+  timeout: 90
+
+deepseek_reasoning:
+  model: "deepseek-reasoner"
+  api_base: "https://api.deepseek.com"
+  temperature: 0.2
+  max_tokens: 6000
+  timeout: 120
+
+# 针对不同Agent的推荐配置
+agent_recommendations:
+  designer: "deepseek_default"
+  coder: "deepseek_coder"
+  conductor: "deepseek_reasoning"

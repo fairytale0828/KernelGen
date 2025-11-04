@@ -1,0 +1,25 @@
+# KernelGen 仅代码生成工作流配置
+# 跳过Designer，直接进行代码生成
+
+agent_info:
+  coder:
+    possible_next_agent: [verifier]
+    output_format:
+      parser_name: coder_parser
+      parser_definition:
+        output_fields:
+          code:
+            field_type: str
+            mandatory: true
+            field_description: "Complete executable Triton kernel code"
+  verifier:
+    possible_next_agent: [finish, coder]
+
+start_agent: coder
+
+# Agents that require LLM analysis even when only one option is available
+mandatory_llm_analysis: [verifier]
+
+limitation_info:
+  required:
+    max_step: 15    # Reduced steps since we skip designer
