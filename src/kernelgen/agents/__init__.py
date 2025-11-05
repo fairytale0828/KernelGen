@@ -1,15 +1,20 @@
 """
-Agent模块 - 包含Designer、Coder、Conductor三个智能Agent
+Multi-Agent Kernel Generation System
+四个专门的Agent协作生成高性能Triton kernel
 """
 
-from .designer import DesignerAgent
-from .coder import CoderAgent  
-from .conductor import ConductorAgent
-from .base import AgentBase
+from .base_agent import BaseAgent
+from .design_agent import DesignAgent
+from .code_agent import CodeAgent
+from .optimize_agent import OptimizeAgent
+from .debug_agent import DebugAgent
+from .agent_coordinator import AgentCoordinator
 
 __all__ = [
-    "DesignerAgent",
-    "CoderAgent", 
-    "ConductorAgent",
-    "AgentBase"
+    'BaseAgent',
+    'DesignAgent',
+    'CodeAgent', 
+    'OptimizeAgent',
+    'DebugAgent',
+    'AgentCoordinator'
 ]

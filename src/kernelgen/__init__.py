@@ -34,13 +34,13 @@ logger = logging.getLogger(__name__)
 __version__ = "0.1.0"
 __author__ = "KernelGen Team"
 
-# 导出主要类
-from .core.generator import KernelGenerator
-from .core.task import Task
+# 导出主要类 - 暂时注释掉旧的导入，避免循环依赖
+# from .core.generator import KernelGenerator
+# from .core.task import Task
 
 __all__ = [
-    "KernelGenerator",
-    "Task"
+    # "KernelGenerator",
+    # "Task"
 ]
 
 def get_project_root():
