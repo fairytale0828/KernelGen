@@ -63,24 +63,48 @@ class TritonPerformanceBenchmark:
                 # 查找kernel函数和wrapper函数
                 kernel_func = None
                 wrapper_func = None
+                all_functions = []
                 
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
+                    if not callable(attr) or attr_name.startswith('_'):
+                        continue
+                    
+                    all_functions.append(attr_name)
+                    
                     if hasattr(attr, '__triton_jit__'):
                         kernel_func = attr
-                    elif callable(attr) and not attr_name.startswith('_') and attr_name != kernel_name:
-                        # 寻找wrapper函数
-                        if ('triton' in attr_name.lower() or 
-                            'wrapper' in attr_name.lower() or
-                            not hasattr(attr, '__triton_jit__')):
-                            wrapper_func = attr
+                        logger.debug(f"找到@triton.jit函数: {attr_name}")
+                    elif not attr_name.startswith('test_'):  # 排除测试函数
+                        # 检查函数签名，确保它可以接受参数
+                        import inspect
+                        try:
+                            sig = inspect.signature(attr)
+                            param_count = len(sig.parameters)
+                            
+                            # wrapper函数应该有参数
+                            if param_count > 0:
+                                # 优先选择包含操作名称的函数
+                                if ('triton' in attr_name.lower() or 
+                                    'relu' in attr_name.lower() or
+                                    'wrapper' in attr_name.lower() or
+                                    kernel_name.replace('_kernel', '') in attr_name.lower()):
+                                    wrapper_func = attr
+                                    logger.debug(f"找到wrapper函数: {attr_name} (参数数量: {param_count})")
+                                elif wrapper_func is None:  # 如果还没找到wrapper函数，这个也可以作为候选
+                                    wrapper_func = attr
+                                    logger.debug(f"候选wrapper函数: {attr_name} (参数数量: {param_count})")
+                        except Exception as e:
+                            logger.debug(f"检查函数签名失败 {attr_name}: {e}")
+                
+                logger.info(f"模块中的所有函数: {all_functions}")
                 
                 # 优先返回wrapper函数，其次是kernel函数
                 if wrapper_func:
-                    logger.debug(f"找到wrapper函数: {wrapper_func.__name__}")
+                    logger.info(f"选择wrapper函数: {wrapper_func.__name__}")
                     return wrapper_func
                 elif kernel_func:
-                    logger.debug(f"找到kernel函数: {kernel_func.__name__}")
+                    logger.info(f"选择kernel函数: {kernel_func.__name__}")
                     return kernel_func
                 else:
                     logger.error("未找到可调用的kernel函数")
@@ -261,7 +285,7 @@ class TritonPerformanceBenchmark:
     def benchmark_general(self, triton_func: Any, pytorch_func: Any, test_inputs: List[torch.Tensor], 
                          dtype: torch.dtype = torch.float32) -> Dict[str, Any]:
         """
-        通用性能基准测试
+        通用性能基准测试 - 适用于任何算子类型
         
         Args:
             triton_func: 编译后的Triton函数
@@ -277,7 +301,8 @@ class TritonPerformanceBenchmark:
             "pytorch_times": [],
             "speedups": [],
             "success": True,
-            "error": None
+            "error": None,
+            "has_error": False
         }
         
         try:
@@ -292,6 +317,7 @@ class TritonPerformanceBenchmark:
             if triton_time is None:
                 results["error"] = "Triton kernel执行失败"
                 results["success"] = False
+                results["has_error"] = True
                 return results
             
             speedup = pytorch_time / triton_time if triton_time > 0 else 0
@@ -299,6 +325,9 @@ class TritonPerformanceBenchmark:
             results["triton_times"].append(triton_time)
             results["pytorch_times"].append(pytorch_time)
             results["speedups"].append(speedup)
+            results["speedup"] = speedup  # 添加单个speedup字段
+            results["triton_time_ms"] = triton_time
+            results["pytorch_time_ms"] = pytorch_time
             
             logger.info(f"  PyTorch: {pytorch_time:.3f}ms")
             logger.info(f"  Triton:  {triton_time:.3f}ms")
@@ -306,6 +335,7 @@ class TritonPerformanceBenchmark:
                 
         except Exception as e:
             results["success"] = False
+            results["has_error"] = True
             results["error"] = str(e)
             logger.error(f"性能测试失败: {str(e)}")
         

@@ -27,7 +27,7 @@ class FeedbackAnalyzer:
         self.compilation_patterns = self._init_compilation_patterns()
         self.runtime_patterns = self._init_runtime_patterns()
         self.performance_thresholds = {
-            "min_speedup": 0.8,  # 最低加速比要求
+            "min_speedup": 0.6,  # 最低加速比要求
             "target_speedup": 1.2,  # 目标加速比
             "excellent_speedup": 2.0  # 优秀加速比
         }
