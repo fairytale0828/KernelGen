@@ -1,5 +1,6 @@
 # KernelGen Configuration File
 # 统一配置文件，控制所有生成和评估参数
+# 支持原始Agent系统和LangChain系统
 
 # 数据集配置
 dataset:
@@ -21,6 +22,26 @@ generation:
     model_name: "deepseek-coder"
     temperature: 0.0
     max_tokens: 4096
+
+# LangChain特定配置
+langchain:
+  # 链配置
+  chains:
+    analysis:
+      max_retries: 3
+      timeout: 60
+    generation:
+      max_retries: 3
+      timeout: 120
+    validation:
+      max_retries: 2
+      timeout: 30
+  
+  # 内存配置
+  memory:
+    type: "buffer_window"  # buffer_window, conversation_summary
+    k: 5  # 保持最近k轮对话
+    return_messages: true
     
 # 性能测试配置
 performance:

@@ -39,14 +39,20 @@ class TritonPerformanceBenchmark:
     
     def compile_and_load_kernel(self, kernel_code: str, kernel_name: str = "test_kernel") -> Optional[Any]:
         """
-        编译并加载Triton kernel
+        编译并加载Triton kernel - 改进版本
+        
+        优先选择wrapper函数而不是@triton.jit函数，确保可以直接调用。
+        选择逻辑：
+        1. 优先选择包含'triton_', 'forward', 'wrapper'的函数
+        2. 确保函数有参数（不是无参数函数）
+        3. 排除@triton.jit装饰的函数和test_开头的函数
         
         Args:
-            kernel_code: Triton kernel代码
-            kernel_name: kernel名称
+            kernel_code: 完整的Triton实现代码（包含kernel、wrapper、test函数）
+            kernel_name: kernel名称（用于临时文件命名）
             
         Returns:
-            编译后的kernel函数，失败返回None
+            编译后的wrapper函数（可直接调用），失败返回None
         """
         try:
             # 创建临时文件
@@ -65,9 +71,12 @@ class TritonPerformanceBenchmark:
                 wrapper_func = None
                 all_functions = []
                 
+                # 简化的函数选择逻辑 - 结合两个系统的优点
+                wrapper_patterns = ['triton_', 'forward', 'wrapper']
+                
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
-                    if not callable(attr) or attr_name.startswith('_'):
+                    if not callable(attr) or attr_name.startswith('_') or attr_name.startswith('test_'):
                         continue
                     
                     all_functions.append(attr_name)
@@ -75,37 +84,32 @@ class TritonPerformanceBenchmark:
                     if hasattr(attr, '__triton_jit__'):
                         kernel_func = attr
                         logger.debug(f"找到@triton.jit函数: {attr_name}")
-                    elif not attr_name.startswith('test_'):  # 排除测试函数
-                        # 检查函数签名，确保它可以接受参数
-                        import inspect
+                    else:
+                        # 简化的wrapper函数检查 - 学习原始系统的简洁性
                         try:
+                            import inspect
                             sig = inspect.signature(attr)
-                            param_count = len(sig.parameters)
-                            
-                            # wrapper函数应该有参数
-                            if param_count > 0:
-                                # 优先选择包含操作名称的函数
-                                if ('triton' in attr_name.lower() or 
-                                    'relu' in attr_name.lower() or
-                                    'wrapper' in attr_name.lower() or
-                                    kernel_name.replace('_kernel', '') in attr_name.lower()):
+                            if len(sig.parameters) > 0:  # wrapper函数应该有参数
+                                # 优先选择匹配模式的函数
+                                is_priority = any(pattern in attr_name.lower() for pattern in wrapper_patterns)
+                                if is_priority:
                                     wrapper_func = attr
-                                    logger.debug(f"找到wrapper函数: {attr_name} (参数数量: {param_count})")
-                                elif wrapper_func is None:  # 如果还没找到wrapper函数，这个也可以作为候选
+                                    logger.debug(f"找到优先wrapper函数: {attr_name}")
+                                    break  # 找到优先函数就停止搜索
+                                elif wrapper_func is None:
                                     wrapper_func = attr
-                                    logger.debug(f"候选wrapper函数: {attr_name} (参数数量: {param_count})")
+                                    logger.debug(f"候选wrapper函数: {attr_name}")
                         except Exception as e:
                             logger.debug(f"检查函数签名失败 {attr_name}: {e}")
                 
                 logger.info(f"模块中的所有函数: {all_functions}")
                 
                 # 优先返回wrapper函数，其次是kernel函数
-                if wrapper_func:
-                    logger.info(f"选择wrapper函数: {wrapper_func.__name__}")
-                    return wrapper_func
-                elif kernel_func:
-                    logger.info(f"选择kernel函数: {kernel_func.__name__}")
-                    return kernel_func
+                selected_func = wrapper_func or kernel_func
+                if selected_func:
+                    func_type = "wrapper" if selected_func == wrapper_func else "kernel"
+                    logger.info(f"选择{func_type}函数: {selected_func.__name__}")
+                    return selected_func
                 else:
                     logger.error("未找到可调用的kernel函数")
                     return None

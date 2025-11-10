@@ -1,17 +1,19 @@
 """
-Agent Coordinator - 重新设计的三Agent协作系统
-基于aikg的最佳实践，实现正确的Agent协作流程
+编排链 - 协调多个链的执行
 """
 
 import logging
 import time
 import asyncio
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
-from .analyzer_agent import AnalyzerAgent
-from .generator_agent import GeneratorAgent
-from .validator_agent import ValidatorAgent
+from langchain_core.language_models import BaseChatModel
+
+from .analysis_chain import AnalysisChain
+from .generation_chain import GenerationChain
+from .validation_chain import ValidationChain
+from ..tools.performance_tools import PerformanceBenchmarkTool
 from ..database import KernelBenchLoader
 from ..core.performance_benchmark import TritonPerformanceBenchmark
 
@@ -29,39 +31,33 @@ class IterationResult:
     success: bool = False
     error_message: str = ""
 
-class AgentCoordinator:
-    """
-    重新设计的Agent协调器
+class OrchestrationChain:
+    """编排链 - 协调分析、生成、验证链的执行"""
     
-    正确的工作流程：
-    1. 首次迭代：AnalyzerAgent分析PyTorch代码 → GeneratorAgent生成代码 → ValidatorAgent测试
-    2. 后续迭代：AnalyzerAgent调试分析 → GeneratorAgent修复代码 → ValidatorAgent测试
-    3. ValidatorAgent提供专门的反馈给AnalyzerAgent和GeneratorAgent
-    """
-    
-    def __init__(self, llm_client, config: Dict[str, Any]):
+    def __init__(self, llm: BaseChatModel, config: Dict[str, Any]):
         """
-        初始化协调器
+        初始化编排链
         
         Args:
-            llm_client: LLM客户端
+            llm: LangChain聊天模型
             config: 配置信息
         """
-        self.llm_client = llm_client
+        self.llm = llm
         self.config = config
         
-        # 初始化三个Agent
-        self.analyzer_agent = AnalyzerAgent(llm_client, config)
-        self.generator_agent = GeneratorAgent(llm_client, config)
-        self.validator_agent = ValidatorAgent(llm_client, config)
+        # 初始化各个链
+        self.analysis_chain = AnalysisChain(llm)
+        self.generation_chain = GenerationChain(llm)
+        self.validation_chain = ValidationChain(llm)
         
-        # 初始化性能测试器
+        # 初始化性能测试工具
         performance_config = config.get("performance", {})
         self.benchmark = TritonPerformanceBenchmark(
             device=performance_config.get("device", "cuda"),
             warmup_runs=performance_config.get("warmup_runs", 10),
             benchmark_runs=performance_config.get("benchmark_runs", 100)
         )
+        self.performance_tool = PerformanceBenchmarkTool(self.benchmark)
         
         # 迭代控制参数
         self.max_iterations = config.get("generation", {}).get("max_iterations", 5)
@@ -72,7 +68,7 @@ class AgentCoordinator:
         self.best_result: Optional[IterationResult] = None
         self.best_speedup = 0.0
         
-        logger.info("Agent协调器初始化完成")
+        logger.info("编排链初始化完成")
     
     async def generate_kernel(self, level: int, problem_id: int) -> Dict[str, Any]:
         """
@@ -123,18 +119,12 @@ class AgentCoordinator:
                         self.best_result = iteration_result
                         print(f"   🎉 新的最佳结果! 加速比: {speedup:.2f}x")
                 
-                # 记录迭代结果，但不进行早停判断
+                # 记录迭代结果
                 if iteration_result.success:
                     speedup = iteration_result.performance_metrics.get("speedup", 0.0) if iteration_result.performance_metrics else 0.0
                     print(f"   📈 迭代 {iteration} 完成: 正确性通过, 加速比 {speedup:.2f}x")
                 else:
                     print(f"   📝 迭代 {iteration} 完成: 需要继续优化")
-                
-                # 显示ValidatorAgent的评估（仅作信息参考）
-                if iteration_result.validation_result and iteration_result.validation_result.get("success", False):
-                    validation_data = iteration_result.validation_result["result"]
-                    validation_status = validation_data.get("validation_result", {}).get("status", "error")
-                    print(f"      ValidatorAgent评估: {validation_status}")
             
             # 4. 保存会话摘要
             session_summary_file = iteration_logger.save_session_summary()
@@ -168,7 +158,7 @@ class AgentCoordinator:
         
         # 记录迭代开始
         iteration_id = iteration_logger.log_iteration_start(
-            iteration, "MultiAgent", {
+            iteration, "LangChainMultiAgent", {
                 "problem_info": problem_info['operation_name'],
                 "input_shapes": problem_info['input_shapes'],
                 "iteration_type": "initial_analysis" if iteration == 1 else "debug_analysis"
@@ -176,12 +166,12 @@ class AgentCoordinator:
         )
         
         try:
-            # 1. AnalyzerAgent阶段
+            # 1. 分析阶段
             print("   🔍 分析阶段...")
             
             if iteration == 1:
                 # 首次迭代：分析PyTorch代码
-                analysis_result = await self.analyzer_agent.analyze_operation(
+                analysis_result = await self.analysis_chain.analyze_operation(
                     pytorch_code=problem_info["pytorch_code"],
                     problem_info=problem_info,
                     iteration=1
@@ -189,7 +179,7 @@ class AgentCoordinator:
             else:
                 # 后续迭代：调试分析
                 previous_results = self._prepare_previous_results()
-                analysis_result = await self.analyzer_agent.analyze_operation(
+                analysis_result = await self.analysis_chain.analyze_operation(
                     pytorch_code=problem_info["pytorch_code"],
                     problem_info=problem_info,
                     iteration=iteration,
@@ -202,17 +192,17 @@ class AgentCoordinator:
                 result.error_message = f"分析阶段失败: {analysis_result.get('error', '')}"
                 return result
             
-            # 2. GeneratorAgent阶段
+            # 2. 生成阶段
             print("   💻 代码生成阶段...")
             
             analysis_data = analysis_result["result"]
             
             if iteration == 1:
                 # 首次迭代：根据架构设计生成代码
-                generation_result = await self.generator_agent.generate_code(
+                generation_result = await self.generation_chain.generate_code(
                     pytorch_code=problem_info["pytorch_code"],
                     problem_info=problem_info,
-                    architecture_design=analysis_data.get("architecture_design", {}),
+                    architecture_design=analysis_data.get("kernel_structure", {}),
                     implementation_guidance=analysis_data.get("implementation_guidance", {})
                 )
             else:
@@ -221,7 +211,7 @@ class AgentCoordinator:
                 previous_errors = self._get_previous_errors()
                 fix_guidance = self._extract_fix_guidance(analysis_data)
                 
-                generation_result = await self.generator_agent.fix_code(
+                generation_result = await self.generation_chain.fix_code(
                     pytorch_code=problem_info["pytorch_code"],
                     current_code=previous_code,
                     error_info=previous_errors,
@@ -245,7 +235,7 @@ class AgentCoordinator:
                 kernel_path = iteration_logger.log_generated_kernel(
                     iteration, generated_code, 
                     f"{problem_info['operation_name']}_kernel", 
-                    "GeneratorAgent"
+                    "LangChainGenerator"
                 )
                 print(f"      代码已保存: {kernel_path}")
             
@@ -266,10 +256,10 @@ class AgentCoordinator:
                     performance_result.get("correctness", False)
                 )
             
-            # 4. ValidatorAgent阶段
+            # 4. 验证阶段
             print("   ✅ 验证阶段...")
             
-            validation_result = await self.validator_agent.validate_kernel(
+            validation_result = await self.validation_chain.validate_kernel(
                 pytorch_code=problem_info["pytorch_code"],
                 triton_code=generated_code,
                 test_results=performance_result,
@@ -279,60 +269,24 @@ class AgentCoordinator:
             
             result.validation_result = validation_result
             
-            # 基于正确性判断成功，而不是基于ValidatorAgent的复杂判断
+            # 基于正确性判断成功
             correctness = performance_result.get("correctness", False)
             speedup = performance_result.get("speedup", 0.0)
             
             if correctness:
                 result.success = True
                 print(f"   🎉 成功! 正确性通过, 加速比: {speedup:.2f}x")
-                if speedup >= 1.0:
-                    print(f"      ✨ 性能优于PyTorch!")
-                elif speedup >= 0.8:
-                    print(f"      ✅ 性能接近PyTorch")
-                else:
-                    print(f"      📊 性能低于PyTorch，但功能正确")
             else:
                 result.success = False
                 print(f"   ❌ 失败: 正确性检查未通过")
             
-            # 仍然记录ValidatorAgent的分析结果，但不用于成功判断
-            if validation_result.get("success", False):
-                validation_data = validation_result["result"]
-                validation_status = validation_data.get("validation_result", {}).get("status", "error")
-                print(f"      ValidatorAgent评估: {validation_status}")
-            else:
-                print(f"      ValidatorAgent分析失败: {validation_result.get('error', '')}")
-            
-            # 记录迭代完成 - 增强版日志
+            # 记录迭代完成
             detailed_output = {
                 "kernel_generated": bool(result.final_code),
                 "performance_tested": bool(result.performance_metrics),
                 "analysis_success": result.analysis_result.get("success", False) if result.analysis_result else False,
                 "generation_success": result.generation_result.get("success", False) if result.generation_result else False,
                 "validation_success": result.validation_result.get("success", False) if result.validation_result else False,
-                
-                # 详细的Agent结果
-                "analysis_result": {
-                    "success": result.analysis_result.get("success", False) if result.analysis_result else False,
-                    "error": result.analysis_result.get("error", "") if result.analysis_result else "",
-                    "analysis_type": result.analysis_result.get("result", {}).get("analysis_type", "") if result.analysis_result else ""
-                },
-                "generation_result": {
-                    "success": result.generation_result.get("success", False) if result.generation_result else False,
-                    "error": result.generation_result.get("error", "") if result.generation_result else "",
-                    "kernel_name": result.generation_result.get("result", {}).get("kernel_name", "") if result.generation_result else ""
-                },
-                "validation_result": {
-                    "success": result.validation_result.get("success", False) if result.validation_result else False,
-                    "error": result.validation_result.get("error", "") if result.validation_result else "",
-                    "status": result.validation_result.get("result", {}).get("validation_result", {}).get("status", "") if result.validation_result else ""
-                },
-                
-                # 错误信息汇总
-                "all_errors": self._collect_all_errors(result),
-                
-                # 性能数据
                 "performance_summary": {
                     "correctness": performance_result.get("correctness", False),
                     "speedup": performance_result.get("speedup", 0.0),
@@ -357,11 +311,7 @@ class AgentCoordinator:
             # 记录失败的迭代
             iteration_logger.log_iteration_complete(
                 iteration_id,
-                {
-                    "kernel_generated": bool(result.final_code),
-                    "performance_tested": bool(result.performance_metrics),
-                    "exception_occurred": True
-                },
+                {"exception_occurred": True},
                 False,
                 result.error_message,
                 result.performance_metrics
@@ -369,154 +319,19 @@ class AgentCoordinator:
             
             return result
     
-    async def _run_performance_test(self, 
-                                  kernel_code: str,
-                                  pytorch_forward,
-                                  test_inputs,
-                                  init_inputs) -> Dict[str, Any]:
+    async def _run_performance_test(self, kernel_code: str, pytorch_forward, 
+                                  test_inputs, init_inputs) -> Dict[str, Any]:
         """运行性能测试"""
         try:
-            # 1. 首先确保输入tensor在CUDA设备上（方案B：在所有测试前统一设备）
-            import torch
-            if torch.cuda.is_available():
-                cuda_test_inputs = []
-                for inp in test_inputs:
-                    if isinstance(inp, torch.Tensor):
-                        cuda_test_inputs.append(inp.cuda())
-                    else:
-                        cuda_test_inputs.append(inp)
-                test_inputs = cuda_test_inputs
-                
-                print(f"      输入tensor已移动到CUDA: {[inp.device for inp in test_inputs if isinstance(inp, torch.Tensor)]}")
-            else:
-                return {
-                    "success": False,
-                    "error": "CUDA不可用，无法运行Triton kernel",
-                    "correctness": False,
-                    "speedup": 0.0
-                }
+            import json
             
-            # 2. 运行PyTorch基准测试（现在使用CUDA输入）
-            pytorch_time = None
-            pytorch_result = None
+            # 直接调用性能测试逻辑，避免JSON序列化问题
+            result = self.performance_tool._run_performance_test(
+                kernel_code, pytorch_forward, test_inputs, init_inputs
+            )
             
-            try:
-                # 获取PyTorch参考结果和性能（使用CUDA输入）
-                if init_inputs and isinstance(init_inputs, dict) and init_inputs:
-                    pytorch_result = pytorch_forward(*test_inputs, **init_inputs)
-                elif init_inputs and isinstance(init_inputs, list) and init_inputs:
-                    pytorch_result = pytorch_forward(*test_inputs, *init_inputs)
-                else:
-                    pytorch_result = pytorch_forward(*test_inputs)
-                
-                # 测试PyTorch性能（使用CUDA输入）
-                pytorch_time = self.benchmark._benchmark_pytorch_general(pytorch_forward, test_inputs)
-                print(f"      PyTorch基准: {pytorch_time:.4f}ms (CUDA)")
-                
-            except Exception as pytorch_error:
-                print(f"      PyTorch基准测试失败: {pytorch_error}")
-                return {
-                    "success": False,
-                    "error": f"PyTorch基准测试失败: {pytorch_error}",
-                    "correctness": False,
-                    "speedup": 0.0
-                }
+            return result
             
-            # 3. 编译Triton kernel
-            triton_func = self.benchmark.compile_and_load_kernel(kernel_code)
-            if not triton_func:
-                return {
-                    "success": False,
-                    "error": "Triton kernel编译失败",
-                    "correctness": False,
-                    "speedup": 0.0,
-                    "pytorch_time": pytorch_time,  # 至少返回PyTorch数据
-                    "triton_time": 0.0
-                }
-            
-            # 4. 正确性测试（现在两个结果都在CUDA上）
-            try:
-                # 获取Triton结果（使用CUDA输入）
-                triton_result = triton_func(*test_inputs)
-                
-                # 正确性检查（现在两个结果都在同一设备上）
-                if isinstance(pytorch_result, torch.Tensor) and isinstance(triton_result, torch.Tensor):
-                    max_diff = torch.max(torch.abs(pytorch_result - triton_result)).item()
-                    correctness = max_diff < 1e-4
-                    
-                    print(f"      正确性检查: {'通过' if correctness else '失败'}, 最大差异: {max_diff:.6f}")
-                    print(f"      PyTorch结果范围: [{pytorch_result.min().item():.6f}, {pytorch_result.max().item():.6f}] (CUDA)")
-                    print(f"      Triton结果范围: [{triton_result.min().item():.6f}, {triton_result.max().item():.6f}] (CUDA)")
-                    print(f"      设备检查: PyTorch={pytorch_result.device}, Triton={triton_result.device}")
-                else:
-                    correctness = False
-                    max_diff = float('inf')
-                    print(f"      正确性检查失败: 结果类型不匹配")
-                
-            except Exception as correctness_error:
-                print(f"      正确性检查失败: {correctness_error}")
-                return {
-                    "success": False,
-                    "error": f"正确性检查失败: {correctness_error}",
-                    "correctness": False,
-                    "speedup": 0.0,
-                    "pytorch_time": pytorch_time,  # 至少返回PyTorch数据
-                    "triton_time": 0.0
-                }
-            
-            # 5. 性能测试
-            if correctness:
-                try:
-                    # 使用现有的benchmark_general方法 - 专门为Triton设计
-                    perf_result = self.benchmark.benchmark_general(
-                        triton_func, pytorch_forward, test_inputs
-                    )
-                    
-                    if perf_result.get("success", False):
-                        speedup = perf_result.get("speedup", 0.0)
-                        pytorch_time = perf_result.get("pytorch_time_ms", 0.0)
-                        triton_time = perf_result.get("triton_time_ms", 0.0)
-                        
-                        print(f"      性能测试: PyTorch {pytorch_time:.4f}ms, Triton {triton_time:.4f}ms, 加速比 {speedup:.2f}x")
-                        
-                        return {
-                            "success": True,
-                            "correctness": True,
-                            "speedup": speedup,
-                            "pytorch_time": pytorch_time,
-                            "triton_time": triton_time,
-                            "max_diff": max_diff
-                        }
-                    else:
-                        print(f"      性能测试失败: {perf_result.get('error', '未知错误')}")
-                        return {
-                            "success": True,  # 正确性通过了
-                            "correctness": True,
-                            "speedup": 0.0,
-                            "error": f"性能测试失败: {perf_result.get('error', '未知错误')}",
-                            "max_diff": max_diff
-                        }
-                    
-                except Exception as perf_error:
-                    print(f"      性能测试失败: {perf_error}")
-                    return {
-                        "success": True,  # 正确性通过了
-                        "correctness": True,
-                        "speedup": 0.0,
-                        "error": f"性能测试失败: {perf_error}",
-                        "max_diff": max_diff
-                    }
-            else:
-                return {
-                    "success": False,
-                    "correctness": False,
-                    "speedup": 0.0,
-                    "max_diff": max_diff,
-                    "error": "正确性检查未通过",
-                    "pytorch_time": pytorch_time,  # 至少返回PyTorch数据
-                    "triton_time": 0.0
-                }
-                
         except Exception as e:
             logger.error(f"性能测试失败: {e}")
             return {
@@ -535,7 +350,7 @@ class AgentCoordinator:
         
         return {
             "generated_code": last_iteration.final_code or "",
-            "error_info": self._get_previous_errors(),  # 使用完整的错误信息收集方法
+            "error_info": self._get_previous_errors(),
             "performance_info": last_iteration.performance_metrics or {},
             "previous_design": last_iteration.analysis_result.get("result", {}) if last_iteration.analysis_result else {}
         }
@@ -587,7 +402,7 @@ class AgentCoordinator:
             "total_iterations": total_iterations,
             "successful_iterations": successful_iterations,
             "best_speedup": self.best_speedup,
-            "final_code": self.best_result.final_code if self.best_result else None
+            "best_kernel": self.best_result.final_code if self.best_result else None
         }
         
         if self.best_result:
@@ -606,27 +421,3 @@ class AgentCoordinator:
             summary["iteration_summary"].append(iter_summary)
         
         return summary
-    
-    def _collect_all_errors(self, result: IterationResult) -> List[str]:
-        """收集迭代中的所有错误信息"""
-        errors = []
-        
-        # 迭代级别错误
-        if result.error_message:
-            errors.append(f"迭代错误: {result.error_message}")
-        
-        # Agent级别错误
-        if result.analysis_result and not result.analysis_result.get("success", False):
-            errors.append(f"分析错误: {result.analysis_result.get('error', '')}")
-        
-        if result.generation_result and not result.generation_result.get("success", False):
-            errors.append(f"生成错误: {result.generation_result.get('error', '')}")
-        
-        if result.validation_result and not result.validation_result.get("success", False):
-            errors.append(f"验证错误: {result.validation_result.get('error', '')}")
-        
-        # 性能测试错误
-        if result.performance_metrics and "error" in result.performance_metrics:
-            errors.append(f"性能测试错误: {result.performance_metrics['error']}")
-        
-        return errors

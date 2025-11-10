@@ -645,7 +645,33 @@ def pytorch_forward(a, b):
         if "Model" in exec_globals:
             # 如果有Model类，创建实例并使用forward方法
             model_class = exec_globals["Model"]
-            model = model_class()
+            
+            # 尝试使用初始化参数创建模型实例
+            try:
+                if init_inputs:
+                    # 使用get_init_inputs()返回的参数初始化模型
+                    model = model_class(*init_inputs)
+                else:
+                    # 无参数情况
+                    model = model_class()
+            except TypeError as e:
+                # 如果参数不匹配，尝试其他策略
+                try:
+                    # 尝试无参数初始化
+                    model = model_class()
+                except TypeError:
+                    # 如果还是失败，尝试从代码中推断参数
+                    import inspect
+                    sig = inspect.signature(model_class.__init__)
+                    params = list(sig.parameters.keys())[1:]  # 排除self
+                    
+                    if params and init_inputs:
+                        # 根据参数数量调整
+                        adjusted_inputs = init_inputs[:len(params)]
+                        model = model_class(*adjusted_inputs)
+                    else:
+                        raise ValueError(f"无法初始化Model类: {e}")
+            
             model.eval()  # 设置为评估模式
             
             def pytorch_forward(*inputs):
