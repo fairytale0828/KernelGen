@@ -207,6 +207,26 @@ class IterationLogger:
             "additional_metrics": additional_metrics or {}
         }
         
+        # 如果有错误信息，记录到性能日志中并输出简短摘要到控制台
+        if additional_metrics:
+            if "error" in additional_metrics:
+                performance_log["error_details"] = additional_metrics["error"]
+                # 只显示简短的错误摘要，详细信息保存到日志文件
+                error_summary = additional_metrics["error"].split('\n')[0]  # 只取第一行
+                logger.error(f"迭代 {iteration} 性能测试错误: {error_summary}")
+                print(f"      ❌ 错误: {error_summary}")
+            
+            if "detailed_error" in additional_metrics:
+                performance_log["detailed_error"] = additional_metrics["detailed_error"]
+                # 详细错误信息只记录到日志文件，不打印到终端
+                logger.debug(f"迭代 {iteration} 详细错误信息已保存到性能日志文件")
+            
+            if "max_diff" in additional_metrics:
+                performance_log["max_difference"] = additional_metrics["max_diff"]
+                if not correctness:
+                    logger.warning(f"迭代 {iteration} 正确性检查失败，最大差异: {additional_metrics['max_diff']:.2e}")
+                    print(f"      ⚠️  最大差异: {additional_metrics['max_diff']:.2e}")
+        
         # 保存性能日志
         performance_file = self.problem_dir / f"performance_iter_{iteration:03d}.json"
         with open(performance_file, 'w', encoding='utf-8') as f:

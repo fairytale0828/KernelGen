@@ -127,11 +127,20 @@ class GenerationChain:
             # 尝试提取Python代码块作为kernel_code
             python_pattern = r'```python\s*(.*?)\s*```'
             match = re.search(python_pattern, response, re.DOTALL)
-            kernel_code = match.group(1) if match else response
+            if match:
+                kernel_code = match.group(1)
+            else:
+                # 如果没有找到代码块，尝试提取整个响应
+                kernel_code = response.strip()
             
             # 确保代码包含必要的导入
             if kernel_code and not kernel_code.startswith('import'):
                 kernel_code = "import torch\nimport triton\nimport triton.language as tl\n\n" + kernel_code
+            
+            # 如果代码为空或太短，记录警告
+            if not kernel_code or len(kernel_code) < 50:
+                logger.warning(f"生成的代码可能不完整，长度: {len(kernel_code)}")
+                logger.warning(f"原始响应: {response[:500]}...")
             
             logger.warning("无法解析生成响应，提取代码块")
             return {

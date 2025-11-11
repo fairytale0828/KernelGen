@@ -248,12 +248,22 @@ class OrchestrationChain:
             
             # 记录性能结果
             if performance_result:
+                # # 准备额外的指标信息，包括错误详情
+                # additional_metrics = {}
+                # if "error" in performance_result:
+                #     additional_metrics["error"] = performance_result["error"]
+                # if "detailed_error" in performance_result:
+                #     additional_metrics["detailed_error"] = performance_result["detailed_error"]
+                # if "max_diff" in performance_result:
+                #     additional_metrics["max_diff"] = performance_result["max_diff"]
+                
                 iteration_logger.log_performance_result(
                     iteration,
                     performance_result.get("triton_time", 0),
                     performance_result.get("pytorch_time", 0),
                     performance_result.get("speedup", 0),
-                    performance_result.get("correctness", False)
+                    performance_result.get("correctness", False),
+                    # additional_metrics
                 )
             
             # 4. 验证阶段
@@ -290,15 +300,24 @@ class OrchestrationChain:
                 "performance_summary": {
                     "correctness": performance_result.get("correctness", False),
                     "speedup": performance_result.get("speedup", 0.0),
-                    "has_error": "error" in performance_result
+                    "has_error": "error" in performance_result,
+                    "error_message": performance_result.get("error", "") if performance_result else ""
                 } if performance_result else {}
             }
+            
+            # 构建完整的错误消息
+            complete_error_message = result.error_message
+            if performance_result and "error" in performance_result:
+                if complete_error_message:
+                    complete_error_message += f"; 性能测试错误: {performance_result['error']}"
+                else:
+                    complete_error_message = f"性能测试错误: {performance_result['error']}"
             
             iteration_logger.log_iteration_complete(
                 iteration_id,
                 detailed_output,
                 result.success,
-                result.error_message,
+                complete_error_message,
                 result.performance_metrics
             )
             
@@ -348,12 +367,37 @@ class OrchestrationChain:
         
         last_iteration = self.iteration_history[-1]
         
-        return {
+        # 构建详细的历史信息，包含所有Agent的执行结果
+        previous_results = {
             "generated_code": last_iteration.final_code or "",
             "error_info": self._get_previous_errors(),
             "performance_info": last_iteration.performance_metrics or {},
             "previous_design": last_iteration.analysis_result.get("result", {}) if last_iteration.analysis_result else {}
         }
+        
+        # 添加各个阶段的详细结果
+        if last_iteration.analysis_result:
+            previous_results["analysis_details"] = {
+                "success": last_iteration.analysis_result.get("success", False),
+                "result": last_iteration.analysis_result.get("result", {}),
+                "error": last_iteration.analysis_result.get("error", "")
+            }
+        
+        if last_iteration.generation_result:
+            previous_results["generation_details"] = {
+                "success": last_iteration.generation_result.get("success", False),
+                "result": last_iteration.generation_result.get("result", {}),
+                "error": last_iteration.generation_result.get("error", "")
+            }
+        
+        if last_iteration.validation_result:
+            previous_results["validation_details"] = {
+                "success": last_iteration.validation_result.get("success", False),
+                "result": last_iteration.validation_result.get("result", {}),
+                "error": last_iteration.validation_result.get("error", "")
+            }
+        
+        return previous_results
     
     def _get_previous_code(self) -> str:
         """获取上次生成的代码"""
@@ -374,8 +418,36 @@ class OrchestrationChain:
         if last_iteration.error_message:
             errors.append(f"迭代错误: {last_iteration.error_message}")
         
-        if last_iteration.performance_metrics and "error" in last_iteration.performance_metrics:
-            errors.append(f"性能测试错误: {last_iteration.performance_metrics['error']}")
+        if last_iteration.performance_metrics:
+            if "error" in last_iteration.performance_metrics:
+                error_msg = last_iteration.performance_metrics['error']
+                
+                # 结构化错误信息，提取关键的Triton错误
+                if "program_id axis must be 0, 1, or 2" in error_msg:
+                    errors.append("TRITON_GRID_ERROR: 使用了超过3维的网格，Triton只支持axis=0,1,2")
+                elif "Mask argument cannot be block type" in error_msg:
+                    errors.append("TRITON_MASK_ERROR: tl.load()中mask参数类型不匹配，需要确保pointer和mask维度一致")
+                elif "shape mismatch" in error_msg.lower():
+                    errors.append("SHAPE_MISMATCH_ERROR: 张量形状不匹配，检查索引计算")
+                else:
+                    errors.append(f"COMPILATION_ERROR: {error_msg}")
+            
+            # 添加更详细的错误信息
+            if not last_iteration.performance_metrics.get("correctness", False):
+                errors.append("CORRECTNESS_ERROR: Triton kernel输出与PyTorch不匹配")
+            
+            if last_iteration.performance_metrics.get("speedup", 0) <= 0:
+                errors.append("PERFORMANCE_ERROR: 没有获得加速比或性能测试失败")
+        
+        # 添加分析、生成、验证阶段的错误
+        if last_iteration.analysis_result and not last_iteration.analysis_result.get("success", False):
+            errors.append(f"分析阶段错误: {last_iteration.analysis_result.get('error', '未知分析错误')}")
+        
+        if last_iteration.generation_result and not last_iteration.generation_result.get("success", False):
+            errors.append(f"生成阶段错误: {last_iteration.generation_result.get('error', '未知生成错误')}")
+        
+        if last_iteration.validation_result and not last_iteration.validation_result.get("success", False):
+            errors.append(f"验证阶段错误: {last_iteration.validation_result.get('error', '未知验证错误')}")
         
         return "\n".join(errors) if errors else "无错误信息"
     

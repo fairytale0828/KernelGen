@@ -9,10 +9,22 @@ INITIAL_GENERATION_PROMPT = PromptTemplate(
     input_variables=["pytorch_code", "architecture_design", "implementation_guidance"],
     template="""你是一个专业的Triton kernel开发专家。请根据架构设计生成高性能的Triton kernel。
 
-## PyTorch参考代码
+## PyTorch参考代码（来自KernelBench数据集）
 ```python
 {pytorch_code}
 ```
+
+## 重要说明
+这个PyTorch代码包含：
+1. `get_inputs()`: 返回测试输入张量列表
+2. `get_init_inputs()`: 返回模型初始化参数
+3. `Model`类: 实现了要转换为Triton的算子逻辑
+4. 你需要实现与Model.forward()等价的Triton kernel
+
+## Triton函数接口设计原则
+- 如果PyTorch模型包含可学习参数（如Conv2d的权重、偏置），Triton wrapper函数应该接受这些参数作为输入
+- 例如：如果Model有conv.weight和bias参数，Triton函数应该是 `triton_func(x, weight, bias)`
+- 这样可以测试Triton kernel的完整功能，性能测试工具会自动从PyTorch模型中提取这些参数
 
 ## 架构设计
 {architecture_design}
@@ -132,12 +144,18 @@ FIX_GENERATION_PROMPT = PromptTemplate(
 ## 修复指导
 {fix_guidance}
 
+## Triton语法约束（必须遵守）
+1. **网格维度限制**: 最多支持3维网格，program_id(axis)中axis只能是0,1,2
+2. **Mask类型匹配**: tl.load()中mask参数必须与pointer参数的维度匹配
+3. **索引计算**: 所有索引必须是标量或正确维度的张量
+4. **内存访问**: 指针运算必须正确，避免越界访问
+
 ## 修复要求
-1. 保持kernel的核心功能不变
-2. 修复所有识别出的问题
-3. 包含所有必要的导入语句（import torch, import triton等）
-4. 改进性能和稳定性
-5. 确保正确性
+1. **严格遵守Triton语法约束**，特别是网格维度和mask类型限制
+2. 修复所有识别出的编译错误
+3. 简化复杂的索引计算，确保维度匹配
+4. 包含所有必要的导入语句（import torch, import triton等）
+5. 保持kernel的核心功能不变
 
 请提供以下修复结果（JSON格式）:
 

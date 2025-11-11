@@ -641,6 +641,16 @@ def pytorch_forward(a, b):
         test_inputs = get_inputs()
         init_inputs = get_init_inputs()
         
+        # 如果CUDA可用，将测试输入移动到CUDA设备
+        if torch.cuda.is_available():
+            cuda_test_inputs = []
+            for inp in test_inputs:
+                if isinstance(inp, torch.Tensor):
+                    cuda_test_inputs.append(inp.cuda())
+                else:
+                    cuda_test_inputs.append(inp)
+            test_inputs = cuda_test_inputs
+        
         # 创建pytorch_forward函数
         if "Model" in exec_globals:
             # 如果有Model类，创建实例并使用forward方法
@@ -672,7 +682,10 @@ def pytorch_forward(a, b):
                     else:
                         raise ValueError(f"无法初始化Model类: {e}")
             
-            model.eval()  # 设置为评估模式
+            # 将模型移动到CUDA设备（如果可用）并设置为评估模式
+            if torch.cuda.is_available():
+                model = model.cuda()
+            model.eval()
             
             def pytorch_forward(*inputs):
                 with torch.no_grad():

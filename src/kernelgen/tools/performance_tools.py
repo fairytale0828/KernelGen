@@ -77,10 +77,11 @@ class PerformanceBenchmarkTool(BaseTool):
                     "speedup": 0.0
                 }
             
-            # 运行PyTorch基准
+            # 运行PyTorch基准 - 使用KernelBench原始模型
             try:
-                # init_inputs是用于模型初始化的，不是用于forward调用的
-                # pytorch_forward已经是初始化好的模型的forward方法
+                # pytorch_forward是从KernelBench数据库中执行的原始模型forward方法
+                # 它已经使用get_init_inputs()正确初始化了模型参数
+                # test_inputs来自get_inputs()，是正确的测试输入
                 pytorch_result = pytorch_forward(*test_inputs)
                 
                 pytorch_time = self.benchmark._benchmark_pytorch_general(pytorch_forward, test_inputs)
@@ -106,34 +107,118 @@ class PerformanceBenchmarkTool(BaseTool):
                 }
             
             # 正确性测试
+            additional_args = []  # 初始化额外参数列表
             try:
-                triton_result = triton_func(*test_inputs)
+                # 检查Triton函数的参数需求
+                import inspect
+                sig = inspect.signature(triton_func)
+                param_names = list(sig.parameters.keys())
+                
+                logger.info(f"Triton函数参数: {param_names}")
+                logger.info(f"测试输入数量: {len(test_inputs)}")
+                
+                # 如果Triton函数需要更多参数（如weight, bias），尝试从PyTorch模型中提取
+                if len(param_names) > len(test_inputs):
+                    logger.info("Triton函数需要额外参数，尝试从PyTorch模型中提取...")
+                    
+                    # 尝试从pytorch_forward的闭包中获取模型
+                    if hasattr(pytorch_forward, '__closure__') and pytorch_forward.__closure__:
+                        for cell in pytorch_forward.__closure__:
+                            if hasattr(cell.cell_contents, 'named_parameters'):
+                                model = cell.cell_contents
+                                logger.info("找到PyTorch模型，提取参数...")
+                                
+                                # 提取权重和偏置
+                                model_params = dict(model.named_parameters())
+                                
+                                # 根据参数名称匹配
+                                for param_name in param_names[len(test_inputs):]:
+                                    if 'weight' in param_name.lower():
+                                        if 'conv.weight' in model_params:
+                                            additional_args.append(model_params['conv.weight'])
+                                            logger.info(f"添加权重参数: {model_params['conv.weight'].shape}")
+                                        elif 'weight' in model_params:
+                                            additional_args.append(model_params['weight'])
+                                            logger.info(f"添加权重参数: {model_params['weight'].shape}")
+                                    elif 'bias' in param_name.lower():
+                                        if 'bias' in model_params:
+                                            additional_args.append(model_params['bias'])
+                                            logger.info(f"添加偏置参数: {model_params['bias'].shape}")
+                                        elif 'conv.bias' in model_params:
+                                            additional_args.append(model_params['conv.bias'])
+                                            logger.info(f"添加偏置参数: {model_params['conv.bias'].shape}")
+                                break
+                
+                # 调用Triton函数
+                if additional_args:
+                    triton_result = triton_func(*test_inputs, *additional_args)
+                    logger.info("成功调用Triton函数（包含额外参数）")
+                else:
+                    triton_result = triton_func(*test_inputs)
+                    logger.info("调用Triton函数（仅使用测试输入）")
                 
                 if isinstance(pytorch_result, torch.Tensor) and isinstance(triton_result, torch.Tensor):
                     max_diff = torch.max(torch.abs(pytorch_result - triton_result)).item()
                     correctness = max_diff < 1e-4
+                    
+                    # 记录详细的正确性检查信息
+                    logger.info(f"正确性检查详情:")
+                    logger.info(f"  PyTorch输出形状: {pytorch_result.shape}")
+                    logger.info(f"  Triton输出形状: {triton_result.shape}")
+                    logger.info(f"  最大差异: {max_diff:.2e}")
+                    logger.info(f"  正确性阈值: 1e-4")
+                    logger.info(f"  正确性检查: {'通过' if correctness else '失败'}")
+                    
+                    if not correctness:
+                        # 记录更多调试信息
+                        logger.warning(f"正确性检查失败详情:")
+                        logger.warning(f"  PyTorch输出统计: min={pytorch_result.min().item():.6f}, max={pytorch_result.max().item():.6f}, mean={pytorch_result.mean().item():.6f}")
+                        logger.warning(f"  Triton输出统计: min={triton_result.min().item():.6f}, max={triton_result.max().item():.6f}, mean={triton_result.mean().item():.6f}")
+                        
+                        # 检查形状是否匹配
+                        if pytorch_result.shape != triton_result.shape:
+                            logger.error(f"输出形状不匹配: PyTorch {pytorch_result.shape} vs Triton {triton_result.shape}")
                 else:
                     correctness = False
                     max_diff = float('inf')
+                    logger.error(f"输出类型不匹配: PyTorch {type(pytorch_result)} vs Triton {type(triton_result)}")
                 
             except Exception as e:
+                logger.error(f"正确性检查执行失败: {e}")
+                import traceback
+                logger.error(f"详细错误信息:\n{traceback.format_exc()}")
                 return {
                     "success": False,
                     "error": f"正确性检查失败: {e}",
                     "correctness": False,
                     "speedup": 0.0,
                     "pytorch_time": pytorch_time,
-                    "triton_time": 0.0
+                    "triton_time": 0.0,
+                    # "detailed_error": traceback.format_exc()
                 }
             
             # 性能测试
             if correctness:
                 try:
-                    perf_result = self.benchmark.benchmark_general(
-                        triton_func, pytorch_forward, test_inputs
-                    )
+                    logger.info("正确性检查通过，开始性能测试...")
+                    
+                    # 为性能测试创建包装函数
+                    if additional_args:
+                        logger.info(f"性能测试使用额外参数数量: {len(additional_args)}")
+                        
+                        def triton_wrapper(*inputs):
+                            return triton_func(*inputs, *additional_args)
+                        
+                        perf_result = self.benchmark.benchmark_general(
+                            triton_wrapper, pytorch_forward, test_inputs
+                        )
+                    else:
+                        perf_result = self.benchmark.benchmark_general(
+                            triton_func, pytorch_forward, test_inputs
+                        )
                     
                     if perf_result.get("success", False):
+                        logger.info(f"性能测试完成: 加速比 {perf_result.get('speedup', 0.0):.2f}x")
                         return {
                             "success": True,
                             "correctness": True,
@@ -143,29 +228,38 @@ class PerformanceBenchmarkTool(BaseTool):
                             "max_diff": max_diff
                         }
                     else:
+                        error_msg = f"性能测试失败: {perf_result.get('error', '未知错误')}"
+                        logger.error(error_msg)
                         return {
                             "success": True,
                             "correctness": True,
                             "speedup": 0.0,
-                            "error": f"性能测试失败: {perf_result.get('error', '未知错误')}",
+                            "error": error_msg,
                             "max_diff": max_diff
                         }
                         
                 except Exception as e:
+                    error_msg = f"性能测试失败: {e}"
+                    logger.error(error_msg)
+                    import traceback
+                    logger.error(f"性能测试详细错误:\n{traceback.format_exc()}")
                     return {
                         "success": True,
                         "correctness": True,
                         "speedup": 0.0,
-                        "error": f"性能测试失败: {e}",
+                        "error": error_msg,
                         "max_diff": max_diff
+                        # "detailed_error": traceback.format_exc()
                     }
             else:
+                error_msg = f"正确性检查未通过，最大差异: {max_diff:.2e}"
+                logger.error(error_msg)
                 return {
                     "success": False,
                     "correctness": False,
                     "speedup": 0.0,
                     "max_diff": max_diff,
-                    "error": "正确性检查未通过",
+                    "error": error_msg,
                     "pytorch_time": pytorch_time,
                     "triton_time": 0.0
                 }
