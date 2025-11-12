@@ -14,7 +14,7 @@ INITIAL_ANALYSIS_PROMPT = PromptTemplate(
 - 输入形状: {input_shapes}
 - 输出形状: {output_shapes}
 
-## PyTorch代码（来自KernelBench数据集）
+## PyTorch代码
 ```python
 {pytorch_code}
 ```
@@ -26,15 +26,40 @@ INITIAL_ANALYSIS_PROMPT = PromptTemplate(
 3. `Model`类: 需要用get_init_inputs()的返回值初始化
 4. 你需要分析Model.forward()方法的计算逻辑来设计Triton kernel
 
+## 关键分析要求
+**必须逐步分解PyTorch模型的每个操作：**
+1. **仔细分析Model.__init__()**: 识别所有层和参数（self.自带的模型层和参数）
+2. **逐行分析Model.forward()**: 理解每一步的具体计算
+3. **识别复合操作**: 区分单一操作vs复合操作序列
+4. **参数依赖分析**: 确定Triton kernel需要哪些输入参数
+5. **数据流分析**: 理解张量形状在每步如何变化
+
+## 特别注意
+- 如果使用nn.Conv2d，注意识别他是否包含bias参数
+- 如果有额外的bias操作，要区分conv内置bias和额外bias
+- 必须确保Triton实现与PyTorch模型在数学上完全等价
+
 ## 分析要求
 请提供以下分析结果（JSON格式）:
 
 ```json
 {{
-    "operation_type": "操作类型(如: elementwise, reduction, matmul等)",
+    "pytorch_model_analysis": {{
+        "model_layers": ["层1描述", "层2描述", "..."],
+        "forward_steps": ["步骤1: 具体操作", "步骤2: 具体操作", "..."],
+        "parameters_needed": ["参数1", "参数2", "..."],
+        "operation_sequence": "完整的操作序列描述"
+    }},
+    "operation_type": "操作类型(如: conv2d_composite, elementwise, reduction, matmul等)",
     "computational_pattern": "计算模式描述",
     "memory_access_pattern": "内存访问模式",
     "parallelization_strategy": "并行化策略",
+    "triton_kernel_design": {{
+        "kernel_parameters": ["kernel需要的参数列表"],
+        "algorithm_approach": "算法实现方法(如: direct_conv, im2col等)",
+        "indexing_strategy": "4D张量索引策略",
+        "batch_handling": "batch维度处理方式"
+    }},
     "block_size_recommendations": {{
         "BLOCK_SIZE": "推荐的块大小",
         "reasoning": "选择理由"
@@ -45,9 +70,10 @@ INITIAL_ANALYSIS_PROMPT = PromptTemplate(
         "memory_hierarchy": "内存层次使用"
     }},
     "implementation_guidance": {{
-        "key_optimizations": ["关键优化点1", "关键优化点2"],
-        "potential_challenges": ["潜在挑战1", "潜在挑战2"],
-        "triton_features": ["需要使用的Triton特性"]
+        "key_optimizations": ["关键优化点1", "关键优化点2", "..."],
+        "potential_challenges": ["潜在挑战1", "潜在挑战2", "..."],
+        "triton_features": ["需要使用的Triton特性"],
+        "correctness_requirements": ["正确性要求1", "正确性要求2", "..."]
     }}
 }}
 ```"""
@@ -125,6 +151,109 @@ DEBUG_ANALYSIS_PROMPT = PromptTemplate(
 ```"""
 )
 
+# 错误分析提示模板
+ERROR_ANALYSIS_PROMPT = PromptTemplate(
+    input_variables=["error_info", "code_context", "performance_data"],
+    template="""分析Triton kernel错误并提供修复方案。
+
+## 错误信息
+{error_info}
+
+## 代码上下文
+```python
+{code_context}
+```
+
+## 性能数据
+{performance_data}
+
+请分析错误原因并提供修复建议（JSON格式）：
+```json
+{{
+    "error_type": "错误类型",
+    "root_cause": "根本原因",
+    "fix_strategy": ["修复方案1", "修复方案2"],
+    "code_changes": ["需要修改的代码部分1", "需要修改的代码部分2"]
+}}
+```"""
+)
+
 def get_analysis_prompt(is_initial: bool = True) -> PromptTemplate:
     """获取分析提示模板"""
     return INITIAL_ANALYSIS_PROMPT if is_initial else DEBUG_ANALYSIS_PROMPT
+
+# 性能优化分析提示模板
+PERFORMANCE_OPTIMIZATION_PROMPT = PromptTemplate(
+    input_variables=["current_code", "performance_metrics", "target_performance"],
+    template="""分析Triton kernel性能并提供优化建议。
+
+## 当前代码
+```python
+{current_code}
+```
+
+## 性能指标
+{performance_metrics}
+
+## 目标性能
+{target_performance}
+
+请分析性能瓶颈并提供优化方案（JSON格式）：
+```json
+{{
+    "bottlenecks": ["瓶颈1", "瓶颈2"],
+    "optimizations": ["优化建议1", "优化建议2"],
+    "expected_improvement": "预期提升"
+}}
+```"""
+)
+
+def get_error_analysis_prompt() -> PromptTemplate:
+    """获取错误分析提示模板"""
+    return ERROR_ANALYSIS_PROMPT
+
+def get_hardware_context(device_info: dict) -> str:
+    """生成硬件上下文信息"""
+    return f"""
+## GPU硬件信息
+- 设备型号: {device_info.get('name', 'Unknown')}
+- 计算能力: {device_info.get('compute_capability', 'Unknown')}
+- 内存大小: {device_info.get('memory_size', 'Unknown')}
+- SM数量: {device_info.get('sm_count', 'Unknown')}
+
+## 硬件优化建议
+- 内存合并访问: 确保连续内存访问模式
+- 共享内存利用: 充分利用片上高速缓存
+- 线程束效率: 避免分支分歧，保持32线程束同步
+- 寄存器使用: 平衡寄存器使用和SM占用率
+"""
+
+def get_knowledge_context(operation_type: str, knowledge_base: dict = None) -> str:
+    """生成知识库上下文信息"""
+    if not knowledge_base:
+        return "## 知识库\n暂无相关知识库信息"
+    
+    relevant_knowledge = knowledge_base.get(operation_type, {})
+    
+    context = f"## {operation_type.upper()}操作相关知识\n"
+    
+    if relevant_knowledge.get('best_practices'):
+        context += "### 最佳实践\n"
+        for practice in relevant_knowledge['best_practices']:
+            context += f"- {practice}\n"
+    
+    if relevant_knowledge.get('optimization_tips'):
+        context += "### 优化技巧\n"
+        for tip in relevant_knowledge['optimization_tips']:
+            context += f"- {tip}\n"
+    
+    if relevant_knowledge.get('common_issues'):
+        context += "### 常见问题\n"
+        for issue in relevant_knowledge['common_issues']:
+            context += f"- {issue}\n"
+    
+    return context
+
+def get_performance_optimization_prompt() -> PromptTemplate:
+    """获取性能优化分析提示模板"""
+    return PERFORMANCE_OPTIMIZATION_PROMPT

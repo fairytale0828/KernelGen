@@ -10,7 +10,8 @@ from langchain_core.runnables import Runnable
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
 
-from ..prompts.generation_prompts import get_generation_prompt
+from ..prompts.generation_prompts import get_generation_prompt, get_intelligent_fix_prompt
+from ..prompts.analysis_prompts import get_hardware_context, get_knowledge_context
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,117 @@ class GenerationChain:
                 "success": False,
                 "error": str(e)
             }
+    
+    async def fix_code_with_intelligent_analysis(self, pytorch_code: str, current_code: str, 
+                                                error_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """基于智能错误分析进行硬件感知的代码修复"""
+        try:
+            intelligent_fix_prompt = get_intelligent_fix_prompt()
+            intelligent_fix_chain = intelligent_fix_prompt | self.llm | StrOutputParser()
+            
+            # 获取硬件信息
+            hardware_info = self._get_hardware_info()
+            print("-------------------hardware_info--------------------")
+            print(hardware_info)
+            
+            # 获取知识库信息
+            operation_type = self._infer_operation_type(current_code)
+            knowledge_context = self._get_knowledge_context(operation_type)
+            
+            input_data = {
+                "pytorch_code": pytorch_code,
+                "current_code": current_code,
+                "error_analysis": f"{json.dumps(error_analysis, indent=2)}\n\n{hardware_info}\n\n{knowledge_context}"
+            }
+            
+            response = await intelligent_fix_chain.ainvoke(input_data)
+            fix_result = self._parse_fix_response(response)
+            
+            return {
+                "success": True,
+                "result": fix_result
+            }
+            
+        except Exception as e:
+            logger.error(f"基于智能分析的代码修复失败: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def _get_hardware_info(self) -> str:
+        """获取硬件信息"""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                device = torch.cuda.current_device()
+                props = torch.cuda.get_device_properties(device)
+                device_info = {
+                    "name": props.name,
+                    "compute_capability": f"{props.major}.{props.minor}",
+                    "memory_size": f"{props.total_memory / 1024**3:.1f}GB",
+                    "sm_count": props.multi_processor_count
+                }
+            else:
+                device_info = {"name": "CPU", "compute_capability": "N/A"}
+            print("-------------------device_info--------------------")
+            print(device_info)
+            
+            return get_hardware_context(device_info)
+        except Exception:
+            return "## 硬件信息\n无法获取硬件信息"
+    
+    def _infer_operation_type(self, code: str) -> str:
+        """从代码推断操作类型"""
+        code_lower = code.lower()
+        
+        if any(pattern in code_lower for pattern in ["conv2d", "conv_relu", "conv.*relu.*bias"]):
+            return "conv2d_composite"
+        elif any(pattern in code_lower for pattern in ["matmul", "mm", "bmm", "dot"]):
+            return "matmul"
+        elif any(pattern in code_lower for pattern in ["conv", "convolution"]):
+            return "convolution"
+        elif any(pattern in code_lower for pattern in ["relu", "sigmoid", "tanh", "add", "mul"]):
+            return "elementwise"
+        elif any(pattern in code_lower for pattern in ["sum", "mean", "max", "min", "softmax"]):
+            return "reduction"
+        else:
+            return "unknown"
+    
+    def _get_knowledge_context(self, operation_type: str) -> str:
+        """获取知识库上下文"""
+        knowledge_base = {
+            "conv2d_composite": {
+                "best_practices": [
+                    "精确实现Conv2D + ReLU + BiasAdd序列",
+                    "正确提取和使用PyTorch模型参数",
+                    "处理4D张量的正确索引计算",
+                    "确保数学等价性"
+                ],
+                "optimization_tips": [
+                    "合理设计grid和block大小",
+                    "优化4D张量内存访问",
+                    "正确处理conv和额外bias",
+                    "使用适当的数值精度"
+                ]
+            },
+            "matmul": {
+                "best_practices": ["使用分块算法", "优化内存访问", "利用共享内存"],
+                "optimization_tips": ["BLOCK_SIZE平衡", "使用tl.dot", "内存合并访问"]
+            },
+            "convolution": {
+                "best_practices": ["合理分块策略", "优化卷积核访问", "处理边界条件"],
+                "optimization_tips": ["im2col算法", "共享内存缓存", "padding处理"]
+            },
+            "elementwise": {
+                "best_practices": ["内存合并访问", "避免分支分歧", "向量化"],
+                "optimization_tips": ["根据尺寸合理设置BLOCK_SIZE大小", "使用tl.where", "mask优化"]
+            }
+        }
+        
+        return get_knowledge_context(operation_type, {operation_type: knowledge_base.get(operation_type, {})})
+    
+
     
     async def fix_code(self, pytorch_code: str, current_code: str, 
                       error_info: str, fix_guidance: Dict[str, Any]) -> Dict[str, Any]:

@@ -117,29 +117,27 @@ async def generate_kernel_async(level: int, problem_id: int, config: Dict[str, A
     """异步生成kernel"""
     
     # 1. 初始化数据库加载器
-    print("📊 初始化KernelBench数据库...")
+    print("初始化KernelBench数据库...")
     db_loader = KernelBenchLoader()
     
     try:
         # 验证问题是否存在
         problem_info = db_loader.get_problem(level, problem_id)
-        print(f"✅ 加载问题: {problem_info['operation_name']} (Level {level} Problem {problem_id})")
+        print(f"加载问题: {problem_info['operation_name']} (Level {level} Problem {problem_id})")
         
         # 验证问题可执行性
         if not db_loader.validate_problem(level, problem_id):
             raise ValueError(f"问题验证失败: Level {level} Problem {problem_id}")
         
     except Exception as e:
-        print(f"❌ 数据库加载失败: {e}")
+        print(f"数据库加载失败: {e}")
         return {"success": False, "error": str(e)}
     
     # 2. 初始化LangChain聊天模型
-    print("🤖 初始化LangChain聊天模型...")
     llm_config = config["generation"]["llm"]
     chat_model = create_chat_model(llm_config)
     
     # 3. 初始化编排链
-    print("🎭 初始化LangChain编排链...")
     orchestration_chain = OrchestrationChain(chat_model, config)
     
     # 4. 开始生成过程
@@ -226,14 +224,13 @@ def main():
     # 设置日志
     setup_logging(args.log_level)
     
-    print("🚀 基于LangChain的多Agent协作Triton Kernel生成器")
+    print("基于LangChain的多Agent协作Triton Kernel生成器")
     print("=" * 70)
     print(f"Level: {args.level}")
     print(f"Problem ID: {args.problem_id}")
     print(f"LLM: {args.server_type}/{args.model_name}")
     print(f"最大迭代次数: {args.iterations}")
     print(f"早停阈值: {args.threshold}x")
-    print(f"框架: LangChain")
     print()
     
     try:
@@ -253,7 +250,7 @@ def main():
         )
         
         # 3. 开始异步生成
-        print(f"📚 开始处理 Level {args.level} Problem {args.problem_id}")
+        print(f"开始处理 Level {args.level} Problem {args.problem_id}")
         start_time = time.time()
         
         result_summary = asyncio.run(generate_kernel_async(args.level, args.problem_id, config))
@@ -262,7 +259,7 @@ def main():
         total_time = end_time - start_time
         
         # 4. 显示结果
-        print("\n🎯 生成完成!")
+        print("\n 生成完成!")
         print("=" * 70)
         
         if result_summary["success"]:
@@ -276,13 +273,13 @@ def main():
             # 保存结果
             output_dir = save_results(result_summary, config)
             
-            print(f"\n📋 结果文件:")
+            print(f"\n 结果文件:")
             print(f"   最佳kernel: {result_summary.get('best_kernel_path', 'N/A')}")
             print(f"   会话摘要: {result_summary.get('session_summary_file', 'N/A')}")
             print(f"   输出目录: {output_dir}")
             
         else:
-            print(f"❌ 生成失败")
+            print(f" 生成失败")
             if "error" in result_summary:
                 print(f"   错误: {result_summary['error']}")
             print(f"   总耗时: {total_time:.1f}秒")
@@ -294,7 +291,7 @@ def main():
         
         # 5. 显示详细统计
         if result_summary.get('iteration_summary'):
-            print(f"\n📊 迭代详情:")
+            print(f"\n 迭代详情:")
             for iter_info in result_summary['iteration_summary']:
                 status = "✅" if iter_info['success'] else "❌"
                 speedup = iter_info.get('speedup', 0.0)
@@ -303,10 +300,8 @@ def main():
         return result_summary["success"]
         
     except KeyboardInterrupt:
-        print("\n❌ 用户中断")
         return False
     except Exception as e:
-        print(f"\n❌ 执行失败: {str(e)}")
         logging.error("执行失败", exc_info=True)
         return False
 

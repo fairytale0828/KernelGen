@@ -11,6 +11,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
 
 from ..prompts.validation_prompts import get_validation_prompt
+from ..prompts.analysis_prompts import get_performance_optimization_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,52 @@ class ValidationChain:
             
         except Exception as e:
             logger.error(f"验证失败: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def analyze_performance_optimization(self, current_code: str, 
+                                             performance_metrics: Dict[str, Any],
+                                             target_performance: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        分析性能优化机会
+        
+        Args:
+            current_code: 当前代码
+            performance_metrics: 性能指标
+            target_performance: 目标性能
+            
+        Returns:
+            性能优化分析结果
+        """
+        try:
+            # 使用性能优化分析提示
+            perf_optimization_prompt = get_performance_optimization_prompt()
+            perf_optimization_chain = perf_optimization_prompt | self.llm | StrOutputParser()
+            
+            # 准备输入数据
+            input_data = {
+                "current_code": current_code,
+                "performance_metrics": json.dumps(performance_metrics, indent=2, ensure_ascii=False),
+                "target_performance": json.dumps(target_performance or {"target_speedup": "2.0x"}, indent=2, ensure_ascii=False)
+            }
+            
+            # 调用LLM进行性能分析
+            response = await perf_optimization_chain.ainvoke(input_data)
+            
+            # 解析分析结果
+            optimization_result = self._parse_validation_response(response, performance_metrics)
+            optimization_result["analysis_type"] = "performance_optimization"
+            
+            logger.info("完成性能优化分析")
+            return {
+                "success": True,
+                "result": optimization_result
+            }
+            
+        except Exception as e:
+            logger.error(f"性能优化分析失败: {e}")
             return {
                 "success": False,
                 "error": str(e)

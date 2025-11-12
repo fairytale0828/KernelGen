@@ -68,7 +68,7 @@ class OrchestrationChain:
         self.best_result: Optional[IterationResult] = None
         self.best_speedup = 0.0
         
-        logger.info("编排链初始化完成")
+
     
     async def generate_kernel(self, level: int, problem_id: int) -> Dict[str, Any]:
         """
@@ -89,9 +89,9 @@ class OrchestrationChain:
             problem_info = db_loader.get_problem(level, problem_id)
             pytorch_forward, test_inputs, init_inputs = db_loader.execute_pytorch_code(problem_info)
             
-            print(f"🎯 开始生成 {problem_info['operation_name']} kernel")
-            print(f"   输入形状: {problem_info['input_shapes']}")
-            print(f"   输出形状: {problem_info['output_shapes']}")
+            print(f"开始生成 {problem_info['operation_name']} kernel")
+            print(f"输入形状: {problem_info['input_shapes']}")
+            print(f"输出形状: {problem_info['output_shapes']}")
             
             # 2. 初始化迭代日志记录器
             from ..core.iteration_logger import IterationLogger
@@ -103,7 +103,7 @@ class OrchestrationChain:
             
             # 3. 执行迭代生成
             for iteration in range(1, self.max_iterations + 1):
-                print(f"\n🔄 第 {iteration}/{self.max_iterations} 轮迭代")
+                print(f"\n第 {iteration}/{self.max_iterations} 轮迭代")
                 
                 iteration_result = await self._execute_iteration(
                     iteration, problem_info, pytorch_forward, test_inputs, init_inputs, iteration_logger
@@ -117,14 +117,14 @@ class OrchestrationChain:
                     if speedup > self.best_speedup:
                         self.best_speedup = speedup
                         self.best_result = iteration_result
-                        print(f"   🎉 新的最佳结果! 加速比: {speedup:.2f}x")
+                        print(f"新的最佳结果! 加速比: {speedup:.2f}x")
                 
                 # 记录迭代结果
                 if iteration_result.success:
                     speedup = iteration_result.performance_metrics.get("speedup", 0.0) if iteration_result.performance_metrics else 0.0
-                    print(f"   📈 迭代 {iteration} 完成: 正确性通过, 加速比 {speedup:.2f}x")
+                    print(f"迭代 {iteration} 完成: 正确性通过, 加速比 {speedup:.2f}x")
                 else:
-                    print(f"   📝 迭代 {iteration} 完成: 需要继续优化")
+                    print(f"迭代 {iteration} 完成: 需要继续优化")
             
             # 4. 保存会话摘要
             session_summary_file = iteration_logger.save_session_summary()
@@ -167,7 +167,7 @@ class OrchestrationChain:
         
         try:
             # 1. 分析阶段
-            print("   🔍 分析阶段...")
+            print("分析阶段...")
             
             if iteration == 1:
                 # 首次迭代：分析PyTorch代码
@@ -177,13 +177,17 @@ class OrchestrationChain:
                     iteration=1
                 )
             else:
-                # 后续迭代：调试分析
+                # 后续迭代：智能错误分析
                 previous_results = self._prepare_previous_results()
-                analysis_result = await self.analysis_chain.analyze_operation(
-                    pytorch_code=problem_info["pytorch_code"],
-                    problem_info=problem_info,
-                    iteration=iteration,
-                    previous_results=previous_results
+                error_info = previous_results.get("error_info", "")
+                previous_code = self._get_previous_code()
+                performance_data = previous_results.get("performance_info", {})
+                
+                # 使用智能错误分析
+                analysis_result = await self.analysis_chain.analyze_error_intelligently(
+                    error_info=error_info,
+                    code_context=previous_code,
+                    performance_data=performance_data
                 )
             
             result.analysis_result = analysis_result
@@ -193,7 +197,7 @@ class OrchestrationChain:
                 return result
             
             # 2. 生成阶段
-            print("   💻 代码生成阶段...")
+            print("代码生成阶段...")
             
             analysis_data = analysis_result["result"]
             
@@ -206,16 +210,14 @@ class OrchestrationChain:
                     implementation_guidance=analysis_data.get("implementation_guidance", {})
                 )
             else:
-                # 后续迭代：修复代码
+                # 后续迭代：基于智能分析修复代码
                 previous_code = self._get_previous_code()
-                previous_errors = self._get_previous_errors()
-                fix_guidance = self._extract_fix_guidance(analysis_data)
                 
-                generation_result = await self.generation_chain.fix_code(
+                # 使用智能分析结果进行代码修复
+                generation_result = await self.generation_chain.fix_code_with_intelligent_analysis(
                     pytorch_code=problem_info["pytorch_code"],
                     current_code=previous_code,
-                    error_info=previous_errors,
-                    fix_guidance=fix_guidance
+                    error_analysis=analysis_data
                 )
             
             result.generation_result = generation_result
@@ -225,7 +227,7 @@ class OrchestrationChain:
                 return result
             
             # 3. 性能测试阶段
-            print("   ⚡ 性能测试阶段...")
+            print("性能测试阶段...")
             
             generated_code = generation_result["result"]["kernel_code"]
             result.final_code = generated_code
@@ -237,7 +239,7 @@ class OrchestrationChain:
                     f"{problem_info['operation_name']}_kernel", 
                     "LangChainGenerator"
                 )
-                print(f"      代码已保存: {kernel_path}")
+                print(f"代码已保存: {kernel_path}")
             
             # 执行性能测试
             performance_result = await self._run_performance_test(
@@ -267,7 +269,7 @@ class OrchestrationChain:
                 )
             
             # 4. 验证阶段
-            print("   ✅ 验证阶段...")
+            print("验证阶段...")
             
             validation_result = await self.validation_chain.validate_kernel(
                 pytorch_code=problem_info["pytorch_code"],
@@ -285,10 +287,21 @@ class OrchestrationChain:
             
             if correctness:
                 result.success = True
-                print(f"   🎉 成功! 正确性通过, 加速比: {speedup:.2f}x")
+                print(f"成功! 正确性通过, 加速比: {speedup:.2f}x")
+                
+                # 如果性能不佳，进行性能优化分析
+                if speedup < self.early_stop_threshold:
+                    print(f"性能分析: 加速比{speedup:.2f}x低于目标{self.early_stop_threshold}x")
+                    perf_analysis = await self.validation_chain.analyze_performance_optimization(
+                        current_code=generated_code,
+                        performance_metrics=performance_result,
+                        target_performance={"target_speedup": f"{self.early_stop_threshold}x"}
+                    )
+                    if perf_analysis.get("success"):
+                        result.performance_optimization = perf_analysis["result"]
             else:
                 result.success = False
-                print(f"   ❌ 失败: 正确性检查未通过")
+                print(f"失败: 正确性检查未通过")
             
             # 记录迭代完成
             detailed_output = {

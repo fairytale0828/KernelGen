@@ -94,21 +94,21 @@ class TritonPerformanceBenchmark:
                                 is_priority = any(pattern in attr_name.lower() for pattern in wrapper_patterns)
                                 if is_priority:
                                     wrapper_func = attr
-                                    logger.debug(f"找到优先wrapper函数: {attr_name}")
+                                    # logger.debug(f"找到优先wrapper函数: {attr_name}")
                                     break  # 找到优先函数就停止搜索
                                 elif wrapper_func is None:
                                     wrapper_func = attr
-                                    logger.debug(f"候选wrapper函数: {attr_name}")
+                                    # logger.debug(f"候选wrapper函数: {attr_name}")
                         except Exception as e:
                             logger.debug(f"检查函数签名失败 {attr_name}: {e}")
                 
-                logger.info(f"模块中的所有函数: {all_functions}")
+                # logger.info(f"模块中的所有函数: {all_functions}")
                 
                 # 优先返回wrapper函数，其次是kernel函数
                 selected_func = wrapper_func or kernel_func
                 if selected_func:
                     func_type = "wrapper" if selected_func == wrapper_func else "kernel"
-                    logger.info(f"选择{func_type}函数: {selected_func.__name__}")
+                    # logger.info(f"选择{func_type}函数: {selected_func.__name__}")
                     return selected_func
                 else:
                     logger.error("未找到可调用的kernel函数")
@@ -212,7 +212,7 @@ class TritonPerformanceBenchmark:
                 pytorch_gflops = flops / (pytorch_time * 1e-3) / 1e9  # 转换为GFLOPS
                 triton_gflops = flops / (triton_time * 1e-3) / 1e9
                 
-                speedup = pytorch_time / triton_time if triton_time > 0 else 0
+                speedup = triton_time / pytorch_time if triton_time > 0 else 0
                 
                 results["triton_times"].append(triton_time)
                 results["pytorch_times"].append(pytorch_time)

@@ -10,7 +10,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
 
-from ..prompts.analysis_prompts import get_analysis_prompt
+from ..prompts.analysis_prompts import get_analysis_prompt, get_error_analysis_prompt, get_hardware_context, get_knowledge_context
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +66,13 @@ class AnalysisChain:
             "input_shapes": str(problem_info.get("input_shapes", [])),
             "output_shapes": str(problem_info.get("output_shapes", []))
         }
+        # print("-------------------input_data--------------------")
+        # print(input_data)
         
         # 调用LLM
         response = await self.chain.ainvoke(input_data)
+        # print("-------------------response--------------------")
+        # print(response)
         
         # 解析JSON响应
         analysis_result = self._parse_analysis_response(response)
@@ -99,6 +103,122 @@ class AnalysisChain:
         analysis_result["analysis_type"] = "debug_analysis"
         
         return analysis_result
+    
+    async def analyze_error_intelligently(self, error_info: str, code_context: str, 
+                                        performance_data: Dict[str, Any] = None) -> Dict[str, Any]:
+        """智能错误分析 - 硬件感知的深度分析"""
+        try:
+            error_analysis_prompt = get_error_analysis_prompt()
+            error_analysis_chain = error_analysis_prompt | self.llm | StrOutputParser()
+            
+            # 获取硬件信息
+            hardware_info = self._get_hardware_info()
+            
+            # 获取知识库信息
+            operation_type = self._infer_operation_type(code_context)
+            knowledge_context = self._get_knowledge_context(operation_type)
+            
+            input_data = {
+                "error_info": f"{error_info}\n\n{hardware_info}\n\n{knowledge_context}",
+                "code_context": code_context,
+                "performance_data": json.dumps(performance_data or {}, indent=2)
+            }
+            
+            response = await error_analysis_chain.ainvoke(input_data)
+            analysis_result = self._parse_analysis_response(response)
+            analysis_result["analysis_type"] = "intelligent_error_analysis"
+            
+            return {
+                "success": True,
+                "result": analysis_result
+            }
+            
+        except Exception as e:
+            logger.error(f"智能错误分析失败: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def _get_hardware_info(self) -> str:
+        """获取硬件信息"""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                device = torch.cuda.current_device()
+                props = torch.cuda.get_device_properties(device)
+                device_info = {
+                    "name": props.name,
+                    "compute_capability": f"{props.major}.{props.minor}",
+                    "memory_size": f"{props.total_memory / 1024**3:.1f}GB",
+                    "sm_count": props.multi_processor_count
+                }
+            else:
+                device_info = {"name": "CPU", "compute_capability": "N/A"}
+            
+            return get_hardware_context(device_info)
+        except Exception:
+            return "## 硬件信息\n无法获取硬件信息"
+    
+    def _infer_operation_type(self, code_context: str) -> str:
+        """从代码上下文推断操作类型"""
+        code_lower = code_context.lower()
+        
+        if any(pattern in code_lower for pattern in ["conv2d", "conv_relu", "conv.*relu.*bias"]):
+            return "conv2d_composite"
+        elif any(pattern in code_lower for pattern in ["matmul", "mm", "bmm", "dot"]):
+            return "matmul"
+        elif any(pattern in code_lower for pattern in ["conv", "convolution"]):
+            return "convolution"
+        elif any(pattern in code_lower for pattern in ["relu", "sigmoid", "tanh", "add", "mul"]):
+            return "elementwise"
+        elif any(pattern in code_lower for pattern in ["sum", "mean", "max", "min", "softmax"]):
+            return "reduction"
+        else:
+            return "unknown"
+    
+    def _get_knowledge_context(self, operation_type: str) -> str:
+        """获取知识库上下文"""
+        knowledge_base = {
+            "conv2d_composite": {
+                "best_practices": [
+                    "分析PyTorch模型的每个组件：Conv2D + ReLU + BiasAdd",
+                    "正确处理4D张量索引：(batch, channel, height, width)",
+                    "区分conv内置bias和额外bias参数",
+                    "确保与PyTorch nn.Conv2d的数学等价性"
+                ],
+                "common_issues": [
+                    "忽略batch维度导致索引错误",
+                    "混淆conv内置bias和额外bias",
+                    "4D张量展平和重构错误",
+                    "padding和stride计算错误"
+                ],
+                "optimization_tips": [
+                    "使用合适的BLOCK_SIZE处理输出元素",
+                    "优化内存访问模式避免bank conflicts",
+                    "正确处理边界条件和padding"
+                ]
+            },
+            "matmul": {
+                "best_practices": ["使用分块算法", "优化内存访问", "利用共享内存"],
+                "common_issues": ["分块大小不当", "内存访问不连续"],
+                "optimization_tips": ["BLOCK_SIZE平衡", "使用tl.dot"]
+            },
+            "convolution": {
+                "best_practices": ["合理分块策略", "优化卷积核访问", "处理边界条件"],
+                "common_issues": ["边界处理复杂", "内存访问不优化"],
+                "optimization_tips": ["im2col算法", "共享内存缓存"]
+            },
+            "elementwise": {
+                "best_practices": ["内存合并访问", "避免分支分歧", "向量化"],
+                "common_issues": ["mask使用不当", "BLOCK_SIZE不合理"],
+                "optimization_tips": ["BLOCK_SIZE=256/512", "使用tl.where"]
+            }
+        }
+        
+        return get_knowledge_context(operation_type, {operation_type: knowledge_base.get(operation_type, {})})
+    
+
     
     def _parse_analysis_response(self, response: str) -> Dict[str, Any]:
         """解析分析响应"""

@@ -214,7 +214,7 @@ class IterationLogger:
                 # 只显示简短的错误摘要，详细信息保存到日志文件
                 error_summary = additional_metrics["error"].split('\n')[0]  # 只取第一行
                 logger.error(f"迭代 {iteration} 性能测试错误: {error_summary}")
-                print(f"      ❌ 错误: {error_summary}")
+                print(f"错误: {error_summary}")
             
             if "detailed_error" in additional_metrics:
                 performance_log["detailed_error"] = additional_metrics["detailed_error"]

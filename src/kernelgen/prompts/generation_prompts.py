@@ -22,9 +22,16 @@ INITIAL_GENERATION_PROMPT = PromptTemplate(
 4. 你需要实现与Model.forward()等价的Triton kernel
 
 ## Triton函数接口设计原则
-- 如果PyTorch模型包含可学习参数（如Conv2d的权重、偏置），Triton wrapper函数应该接受这些参数作为输入
-- 例如：如果Model有conv.weight和bias参数，Triton函数应该是 `triton_func(x, weight, bias)`
-- 这样可以测试Triton kernel的完整功能，性能测试工具会自动从PyTorch模型中提取这些参数
+- 必须仔细分析PyTorch模型的参数结构，确定Triton函数需要的所有参数
+- 例如：如果Model有conv层和额外bias，Triton函数应该是 `triton_func(x, conv_weight, conv_bias, extra_bias)`
+- **关键**：Triton实现必须与PyTorch Model.forward()在数学上完全等价
+- 性能测试工具会自动从PyTorch模型中提取参数，传递给Triton函数
+
+## 参数提取和使用规则
+1. **分析模型结构**：识别所有nn.Module层及其参数
+2. **理解参数含义**：区分不同类型的权重和偏置
+3. **设计函数签名**：确保Triton函数接收所有必要参数
+4. **保证数值等价**：使用相同参数确保计算结果一致
 
 ## 架构设计
 {architecture_design}
@@ -62,48 +69,32 @@ def triton_example(x: torch.Tensor):
     example_kernel[grid](x, output, n_elements, BLOCK_SIZE=BLOCK_SIZE)
     return output
 
-def test_example_correctness():
-    \"\"\"测试函数 - 验证Triton实现与PyTorch的等价性\"\"\"
-    print("Testing Triton implementation vs PyTorch...")
-    
-    # 生成测试数据
-    x = torch.randn(1024, device='cuda')
-    
-    # PyTorch参考结果
-    pytorch_result = torch.example_operation(x)  # 替换为实际操作
-    
-    # Triton结果
-    triton_result = triton_example(x)
-    
-    # 验证等价性
-    max_diff = torch.max(torch.abs(pytorch_result - triton_result))
-    print(f"Maximum difference: {{max_diff.item()}}")
-    
-    if torch.allclose(pytorch_result, triton_result, rtol=1e-5, atol=1e-8):
-        print("✓ Triton implementation matches PyTorch!")
-        return True
-    else:
-        print("✗ Triton implementation differs from PyTorch!")
-        return False
+# 注意：不要生成测试函数！
+# 测试由KernelGen系统自动完成，使用KernelBench原生PyTorch模型
 ```
 
 ## 生成要求
-1. 生成完整的Triton实现，包含kernel函数、wrapper函数和测试函数
-2. 包含所有必要的导入语句（import torch, import triton等）
-3. 使用标准的Triton kernel模式：program_id, arange, load, store
-4. 包含适当的边界检查（mask）
-5. wrapper函数必须能直接接受torch.Tensor参数并返回结果
-6. 测试函数必须验证与PyTorch实现的等价性
-7. 确保索引计算正确，保持代码简洁
+1. **精确分析PyTorch模型**：仔细分析架构设计中的pytorch_model_analysis
+2. **正确的函数签名**：根据模型参数确定Triton函数需要的所有参数
+3. **数学等价性**：确保Triton实现与PyTorch Model.forward()完全等价
+4. **正确的4D张量处理**：对于Conv2D等操作，正确处理batch维度
+5. **参数使用一致性**：使用与PyTorch模型相同的权重和偏置参数
+6. **边界检查和索引**：确保所有内存访问都有正确的边界检查
+7. **简洁高效**：优先保证正确性，然后考虑性能优化
+
+## Conv2D实现指导（如果适用）
+- **理解操作序列**：Conv2D + ReLU + BiasAdd是三个独立操作
+- **参数区分**：区分conv内置bias和额外bias参数
+- **索引计算**：正确计算4D张量的batch, channel, height, width索引
+- **内存布局**：考虑NCHW格式的内存访问模式
 
 请提供以下结果（JSON格式）:
 
 ```json
 {{
-    "kernel_code": "完整的Triton实现代码，包含kernel函数、wrapper函数和测试函数",
+    "kernel_code": "完整的Triton实现代码，只包含kernel函数和wrapper函数，不包含测试函数",
     "kernel_name": "kernel函数名称",
     "wrapper_name": "wrapper函数名称",
-    "test_function_name": "测试函数名称",
     "launch_config": {{
         "grid_function": "网格配置函数代码",
         "block_sizes": "推荐的块大小配置"
@@ -113,12 +104,17 @@ def test_example_correctness():
 }}
 ```
 
+**重要提醒：**
+- 不要生成任何测试函数或PyTorch参考实现
+- 测试由KernelGen系统使用KernelBench原生模型自动完成
+- 只需要生成kernel函数和wrapper函数
+
 注意：
-- 必须生成完整的实现，包含kernel函数、wrapper函数和测试函数
+- **只生成kernel函数和wrapper函数，不要生成测试函数**
 - kernel代码必须包含所有必要的import语句（import torch, import triton, import triton.language as tl）
 - 使用标准的Triton kernel模式：pid = tl.program_id(axis=0), offsets = block_start + tl.arange(0, BLOCK_SIZE)
 - wrapper函数必须能直接调用，接受torch.Tensor参数并返回torch.Tensor结果
-- 测试函数必须包含完整的正确性验证逻辑，使用torch.allclose进行比较
+- **测试由KernelGen系统自动完成，使用KernelBench原生模型**
 - 确保正确的索引计算和边界检查
 - 保持代码简洁，优先保证正确性而非复杂优化"""
 )
@@ -184,6 +180,40 @@ FIX_GENERATION_PROMPT = PromptTemplate(
 - 确保边界条件处理正确"""
 )
 
+# 智能修复提示模板
+INTELLIGENT_FIX_PROMPT = PromptTemplate(
+    input_variables=["pytorch_code", "current_code", "error_analysis"],
+    template="""基于硬件特性和专业知识修复Triton kernel代码。
+
+## PyTorch参考代码
+```python
+{pytorch_code}
+```
+
+## 当前问题代码
+```python
+{current_code}
+```
+
+## 错误分析（包含硬件信息和知识库）
+{error_analysis}
+
+基于硬件特性和操作类型知识，请提供优化的修复方案（JSON格式）：
+```json
+{{
+    "fixed_kernel_code": "修复后的完整代码",
+    "changes_made": ["修改1", "修改2", "..."],
+    "fix_reasoning": "修复说明",
+    "hardware_optimizations": ["硬件优化1", "硬件优化2", "..."],
+    "performance_improvements": "预期性能改进"
+}}
+```"""
+)
+
 def get_generation_prompt(is_initial: bool = True) -> PromptTemplate:
     """获取生成提示模板"""
     return INITIAL_GENERATION_PROMPT if is_initial else FIX_GENERATION_PROMPT
+
+def get_intelligent_fix_prompt() -> PromptTemplate:
+    """获取智能修复提示模板"""
+    return INTELLIGENT_FIX_PROMPT
