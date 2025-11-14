@@ -6,7 +6,7 @@ from langchain_core.prompts import PromptTemplate
 
 # 初始分析提示模板
 INITIAL_ANALYSIS_PROMPT = PromptTemplate(
-    input_variables=["pytorch_code", "operation_name", "input_shapes", "output_shapes"],
+    input_variables=["pytorch_code", "operation_name", "input_shapes", "output_shapes", "hardware_context", "knowledge_context", "operation_type"],
     template="""你是一个专业的GPU kernel分析专家。请分析以下PyTorch操作并设计Triton kernel架构。
 
 ## 操作信息
@@ -34,10 +34,20 @@ INITIAL_ANALYSIS_PROMPT = PromptTemplate(
 4. **参数依赖分析**: 确定Triton kernel需要哪些输入参数
 5. **数据流分析**: 理解张量形状在每步如何变化
 
+## 推断的操作类型
+{operation_type}
+
+## 硬件环境信息
+{hardware_context}
+
+## 相关知识库
+{knowledge_context}
+
 ## 特别注意
 - 如果使用nn.Conv2d，注意识别他是否包含bias参数
 - 如果有额外的bias操作，要区分conv内置bias和额外bias
 - 必须确保Triton实现与PyTorch模型在数学上完全等价
+- 结合硬件特性和操作类型知识进行分析
 
 ## 分析要求
 请提供以下分析结果（JSON格式）:
@@ -70,11 +80,13 @@ INITIAL_ANALYSIS_PROMPT = PromptTemplate(
         "memory_hierarchy": "内存层次使用"
     }},
     "implementation_guidance": {{
-        "key_optimizations": ["关键优化点1", "关键优化点2", "..."],
-        "potential_challenges": ["潜在挑战1", "潜在挑战2", "..."],
-        "triton_features": ["需要使用的Triton特性"],
-        "correctness_requirements": ["正确性要求1", "正确性要求2", "..."]
-    }}
+        "design_principles": ["简单直接的实现", "避免过度优化", "优先保证正确性"],
+        "performance_strategy": "简单高效的并行策略，避免复杂的内存访问模式",
+        "block_size_strategy": "使用合理的块大小，确保GPU利用率",
+        "correctness_requirements": ["与PyTorch模型数学等价", "使用相同的参数", "处理相同的数据流"]
+    }},
+    "hardware_recommendations": "基于当前硬件的优化建议",
+    "knowledge_insights": "基于操作类型的专业知识洞察"
 }}
 ```"""
 )
@@ -212,48 +224,5 @@ def get_error_analysis_prompt() -> PromptTemplate:
     """获取错误分析提示模板"""
     return ERROR_ANALYSIS_PROMPT
 
-def get_hardware_context(device_info: dict) -> str:
-    """生成硬件上下文信息"""
-    return f"""
-## GPU硬件信息
-- 设备型号: {device_info.get('name', 'Unknown')}
-- 计算能力: {device_info.get('compute_capability', 'Unknown')}
-- 内存大小: {device_info.get('memory_size', 'Unknown')}
-- SM数量: {device_info.get('sm_count', 'Unknown')}
-
-## 硬件优化建议
-- 内存合并访问: 确保连续内存访问模式
-- 共享内存利用: 充分利用片上高速缓存
-- 线程束效率: 避免分支分歧，保持32线程束同步
-- 寄存器使用: 平衡寄存器使用和SM占用率
-"""
-
-def get_knowledge_context(operation_type: str, knowledge_base: dict = None) -> str:
-    """生成知识库上下文信息"""
-    if not knowledge_base:
-        return "## 知识库\n暂无相关知识库信息"
-    
-    relevant_knowledge = knowledge_base.get(operation_type, {})
-    
-    context = f"## {operation_type.upper()}操作相关知识\n"
-    
-    if relevant_knowledge.get('best_practices'):
-        context += "### 最佳实践\n"
-        for practice in relevant_knowledge['best_practices']:
-            context += f"- {practice}\n"
-    
-    if relevant_knowledge.get('optimization_tips'):
-        context += "### 优化技巧\n"
-        for tip in relevant_knowledge['optimization_tips']:
-            context += f"- {tip}\n"
-    
-    if relevant_knowledge.get('common_issues'):
-        context += "### 常见问题\n"
-        for issue in relevant_knowledge['common_issues']:
-            context += f"- {issue}\n"
-    
-    return context
-
-def get_performance_optimization_prompt() -> PromptTemplate:
-    """获取性能优化分析提示模板"""
-    return PERFORMANCE_OPTIMIZATION_PROMPT
+# 注意：硬件上下文和知识库上下文现在由services模块提供
+# 这些函数已被移除以避免重复定义

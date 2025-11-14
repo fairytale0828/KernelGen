@@ -4,22 +4,24 @@
 
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 
 from langchain_core.runnables import Runnable
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
 
 from ..prompts.validation_prompts import get_validation_prompt
-from ..prompts.analysis_prompts import get_performance_optimization_prompt
+from ..services import CodeValidationService
 
 logger = logging.getLogger(__name__)
 
 class ValidationChain:
     """验证链 - 验证和分析Triton kernel"""
     
-    def __init__(self, llm: BaseChatModel):
+    def __init__(self, llm: BaseChatModel, 
+                 validation_service: Optional[CodeValidationService] = None):
         self.llm = llm
+        self.validation_service = validation_service or CodeValidationService()
         self.prompt = get_validation_prompt()
         self.chain = self.prompt | llm | StrOutputParser()
     
@@ -27,7 +29,7 @@ class ValidationChain:
                             test_results: Dict[str, Any], error_info: str = "",
                             performance_data: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        验证Triton kernel
+        综合验证Triton kernel - 结合规则验证和LLM分析
         
         Args:
             pytorch_code: PyTorch参考代码
@@ -40,23 +42,22 @@ class ValidationChain:
             验证结果
         """
         try:
-            # 准备输入数据
-            input_data = {
-                "pytorch_code": pytorch_code,
-                "triton_code": triton_code,
-                "test_results": json.dumps(test_results, indent=2, ensure_ascii=False),
-                "error_info": error_info or "无错误"
-            }
+            # 1. 静态代码验证
+            static_validation = self.validation_service.validate_triton_code(triton_code)
             
-            # 调用LLM
-            response = await self.chain.ainvoke(input_data)
+            # 2. LLM验证分析
+            llm_validation = await self._llm_validation_analysis(
+                pytorch_code, triton_code, test_results, error_info
+            )
             
-            # 解析响应
-            validation_result = self._parse_validation_response(response, test_results)
+            # 3. 综合验证结果
+            combined_result = self._combine_validation_results(
+                static_validation, llm_validation, test_results
+            )
             
             return {
                 "success": True,
-                "result": validation_result
+                "result": combined_result
             }
             
         except Exception as e:
@@ -65,6 +66,106 @@ class ValidationChain:
                 "success": False,
                 "error": str(e)
             }
+    
+    async def _llm_validation_analysis(self, pytorch_code: str, triton_code: str,
+                                     test_results: Dict[str, Any], error_info: str) -> Dict[str, Any]:
+        """LLM验证分析"""
+        input_data = {
+            "pytorch_code": pytorch_code,
+            "triton_code": triton_code,
+            "test_results": json.dumps(test_results, indent=2, ensure_ascii=False),
+            "error_info": error_info or "无错误"
+        }
+        
+        response = await self.chain.ainvoke(input_data)
+        return self._parse_validation_response(response, test_results)
+    
+    def _combine_validation_results(self, static_result, llm_result: Dict[str, Any], 
+                                   test_results: Dict[str, Any]) -> Dict[str, Any]:
+        """综合静态验证和LLM验证结果"""
+        
+        # 基于测试结果的基础评估
+        correctness = test_results.get("correctness", False)
+        speedup = test_results.get("speedup", 0.0)
+        
+        # 综合质量评分
+        static_score = static_result.score
+        performance_score = min(speedup / 2.0, 1.0) if speedup > 0 else 0.0
+        correctness_score = 1.0 if correctness else 0.0
+        
+        overall_score = (static_score * 0.3 + performance_score * 0.3 + correctness_score * 0.4)
+        
+        # 确定状态
+        if correctness and static_result.is_valid and speedup >= 1.0:
+            status = "success"
+        elif correctness and static_result.is_valid:
+            status = "partial_success"
+        else:
+            status = "failure"
+        
+        return {
+            "validation_result": {
+                "status": status,
+                "correctness_score": correctness_score,
+                "performance_score": performance_score,
+                "code_quality_score": static_score,
+                "overall_score": overall_score
+            },
+            "static_validation": {
+                "is_valid": static_result.is_valid,
+                "issues": static_result.issues,
+                "warnings": static_result.warnings,
+                "suggestions": static_result.suggestions
+            },
+            "llm_analysis": llm_result.get("detailed_analysis", {}),
+            "recommendations": {
+                "code_improvements": static_result.suggestions,
+                "performance_improvements": llm_result.get("recommendations", {}).get("optimization_opportunities", []),
+                "next_iteration_focus": self._determine_next_focus(static_result, test_results)
+            },
+            "summary": self._generate_validation_summary(status, overall_score, static_result, test_results)
+        }
+    
+    def _determine_next_focus(self, static_result, test_results: Dict[str, Any]) -> List[str]:
+        """确定下次迭代的重点"""
+        focus_areas = []
+        
+        if not test_results.get("correctness", False):
+            focus_areas.append("修复正确性问题")
+        
+        if static_result.issues:
+            focus_areas.append("解决代码质量问题")
+        
+        if test_results.get("speedup", 0) < 1.0:
+            focus_areas.append("提升性能表现")
+        
+        if not focus_areas:
+            focus_areas.append("进一步优化性能")
+        
+        return focus_areas
+    
+    def _generate_validation_summary(self, status: str, score: float, 
+                                   static_result, test_results: Dict[str, Any]) -> str:
+        """生成验证摘要"""
+        summary = f"验证状态: {status} (综合评分: {score:.2f})\n"
+        
+        if test_results.get("correctness"):
+            summary += "✅ 正确性验证通过\n"
+        else:
+            summary += "❌ 正确性验证失败\n"
+        
+        if static_result.is_valid:
+            summary += "✅ 代码质量验证通过\n"
+        else:
+            summary += f"❌ 发现 {len(static_result.issues)} 个代码问题\n"
+        
+        speedup = test_results.get("speedup", 0.0)
+        if speedup >= 1.0:
+            summary += f"✅ 性能表现良好 (加速比: {speedup:.2f}x)\n"
+        else:
+            summary += f"⚠️ 性能有待提升 (加速比: {speedup:.2f}x)\n"
+        
+        return summary
     
     async def analyze_performance_optimization(self, current_code: str, 
                                              performance_metrics: Dict[str, Any],

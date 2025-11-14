@@ -21,6 +21,24 @@ INITIAL_GENERATION_PROMPT = PromptTemplate(
 3. `Model`类: 实现了要转换为Triton的算子逻辑
 4. 你需要实现与Model.forward()等价的Triton kernel
 
+## ⚠️ PyTorch层默认参数 (关键信息)
+**必须使用PyTorch层的实际默认参数，不要假设！**
+
+### 常见PyTorch层默认参数：
+- **nn.Conv2d**: padding=0, stride=1, dilation=1, groups=1, bias=True
+  - ⚠️ 默认padding=0会使输出尺寸缩小！
+  - 输出尺寸 = (input_size + 2*padding - kernel_size) // stride + 1
+- **nn.Linear**: bias=True
+- **nn.BatchNorm2d**: eps=1e-5, momentum=0.1, affine=True
+- **nn.ReLU**: inplace=False
+- **nn.MaxPool2d**: padding=0, stride=kernel_size, dilation=1
+
+### 🎯 关键原则：
+1. **输出形状必须与PyTorch模型完全一致**
+2. **不要假设padding会保持尺寸不变**
+3. **仔细分析PyTorch代码中的层定义**
+4. **如有疑问，优先使用PyTorch默认值**
+
 ## Triton函数接口设计原则
 - 必须仔细分析PyTorch模型的参数结构，确定Triton函数需要的所有参数
 - 例如：如果Model有conv层和额外bias，Triton函数应该是 `triton_func(x, conv_weight, conv_bias, extra_bias)`
@@ -87,6 +105,12 @@ def triton_example(x: torch.Tensor):
 - **参数区分**：区分conv内置bias和额外bias参数
 - **索引计算**：正确计算4D张量的batch, channel, height, width索引
 - **内存布局**：考虑NCHW格式的内存访问模式
+
+## ⚠️ Conv2D关键注意事项：
+1. **检查PyTorch Conv2d定义**：nn.Conv2d(in_ch, out_ch, kernel_size) 默认padding=0
+2. **输出尺寸计算**：output_size = (input_size - kernel_size + 1) 当padding=0时
+3. **不要假设保持尺寸**：只有padding=(kernel_size-1)//2时才保持尺寸
+4. **验证输出形状**：确保与PyTorch输出形状完全匹配
 
 请提供以下结果（JSON格式）:
 

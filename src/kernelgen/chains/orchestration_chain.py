@@ -45,10 +45,22 @@ class OrchestrationChain:
         self.llm = llm
         self.config = config
         
-        # 初始化各个链
-        self.analysis_chain = AnalysisChain(llm)
-        self.generation_chain = GenerationChain(llm)
-        self.validation_chain = ValidationChain(llm)
+        # 初始化服务层
+        from ..services import HardwareInfoService, KnowledgeBaseService, OperationTypeService, CodeValidationService
+        
+        hardware_service = HardwareInfoService()
+        knowledge_service = KnowledgeBaseService()
+        operation_service = OperationTypeService(llm)
+        validation_service = CodeValidationService()
+        
+        # 初始化各个链，注入服务依赖
+        self.analysis_chain = AnalysisChain(
+            llm, hardware_service, knowledge_service, operation_service
+        )
+        self.generation_chain = GenerationChain(
+            llm, hardware_service, knowledge_service, operation_service, validation_service
+        )
+        self.validation_chain = ValidationChain(llm, validation_service)
         
         # 初始化性能测试工具
         performance_config = config.get("performance", {})
@@ -68,6 +80,9 @@ class OrchestrationChain:
         self.best_result: Optional[IterationResult] = None
         self.best_speedup = 0.0
         
+        # 性能优化：缓存操作类型，避免重复推断
+        self._operation_type_cache = None
+        
 
     
     async def generate_kernel(self, level: int, problem_id: int) -> Dict[str, Any]:
@@ -82,6 +97,9 @@ class OrchestrationChain:
             生成结果摘要
         """
         logger.info(f"开始生成kernel: Level {level} Problem {problem_id}")
+        
+        # 重置操作类型缓存（每个新问题都重新开始）
+        self._operation_type_cache = None
         
         try:
             # 1. 加载问题数据
@@ -176,19 +194,28 @@ class OrchestrationChain:
                     problem_info=problem_info,
                     iteration=1
                 )
+                # 缓存操作类型，避免后续重复推断
+                if analysis_result.get("success"):
+                    self._operation_type_cache = analysis_result["result"].get("inferred_operation_type", "unknown")
+                    logger.info(f"缓存操作类型: {self._operation_type_cache}")
             else:
-                # 后续迭代：智能错误分析
+                # 后续迭代：智能错误分析（使用缓存的操作类型）
                 previous_results = self._prepare_previous_results()
                 error_info = previous_results.get("error_info", "")
                 previous_code = self._get_previous_code()
                 performance_data = previous_results.get("performance_info", {})
                 
-                # 使用智能错误分析
+                # 使用智能错误分析，利用缓存的操作类型避免重复推断
                 analysis_result = await self.analysis_chain.analyze_error_intelligently(
                     error_info=error_info,
                     code_context=previous_code,
-                    performance_data=performance_data
+                    performance_data=performance_data,
+                    pytorch_code=problem_info["pytorch_code"]  # 添加PyTorch代码用于fallback
                 )
+                # 注入缓存的操作类型到结果中
+                if analysis_result.get("success") and self._operation_type_cache:
+                    analysis_result["result"]["inferred_operation_type"] = self._operation_type_cache
+                    analysis_result["result"]["operation_type"] = self._operation_type_cache
             
             result.analysis_result = analysis_result
             
@@ -213,11 +240,12 @@ class OrchestrationChain:
                 # 后续迭代：基于智能分析修复代码
                 previous_code = self._get_previous_code()
                 
-                # 使用智能分析结果进行代码修复
+                # 使用智能分析结果进行代码修复，传入缓存的操作类型
                 generation_result = await self.generation_chain.fix_code_with_intelligent_analysis(
                     pytorch_code=problem_info["pytorch_code"],
                     current_code=previous_code,
-                    error_analysis=analysis_data
+                    error_analysis=analysis_data,
+                    cached_operation_type=self._operation_type_cache  # 使用缓存避免重复推断
                 )
             
             result.generation_result = generation_result

@@ -10,22 +10,33 @@ from langchain_core.runnables import Runnable
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
 
-from ..prompts.analysis_prompts import get_analysis_prompt, get_error_analysis_prompt, get_hardware_context, get_knowledge_context
+from ..prompts.analysis_prompts import get_analysis_prompt, get_error_analysis_prompt
+from ..services import HardwareInfoService, KnowledgeBaseService, OperationTypeService
 
 logger = logging.getLogger(__name__)
 
 class AnalysisChain:
     """分析链 - 分析PyTorch代码并设计Triton kernel架构"""
     
-    def __init__(self, llm: BaseChatModel):
+    def __init__(self, llm: BaseChatModel, 
+                 hardware_service: Optional[HardwareInfoService] = None,
+                 knowledge_service: Optional[KnowledgeBaseService] = None,
+                 operation_service: Optional[OperationTypeService] = None):
         self.llm = llm
+        
+        # 初始化服务
+        self.hardware_service = hardware_service or HardwareInfoService()
+        self.knowledge_service = knowledge_service or KnowledgeBaseService()
+        self.operation_service = operation_service or OperationTypeService(llm)
+        
+        # 初始化prompt和chain
         self.prompt = get_analysis_prompt(is_initial=True)
         self.chain = self.prompt | llm | StrOutputParser()
     
     async def analyze_operation(self, pytorch_code: str, problem_info: Dict[str, Any], 
                               iteration: int = 1, previous_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        分析操作并生成架构设计
+        统一的操作分析接口
         
         Args:
             pytorch_code: PyTorch代码
@@ -41,8 +52,8 @@ class AnalysisChain:
                 # 初始分析
                 result = await self._initial_analysis(pytorch_code, problem_info)
             else:
-                # 调试分析
-                result = await self._debug_analysis(pytorch_code, previous_results)
+                # 错误分析和修复建议
+                result = await self._error_analysis(pytorch_code, previous_results)
             
             return {
                 "success": True,
@@ -59,168 +70,135 @@ class AnalysisChain:
     async def _initial_analysis(self, pytorch_code: str, problem_info: Dict[str, Any]) -> Dict[str, Any]:
         """初始分析"""
         
-        # 准备输入数据
+        # 1. 推断操作类型
+        operation_result = await self.operation_service.infer_operation_type(
+            pytorch_code, 
+            problem_info.get("operation_name", "")
+        )
+        
+        operation_type = "unknown"
+        if operation_result.get("success"):
+            operation_type = operation_result["result"].get("primary_operation", "unknown")
+        elif operation_result.get("fallback_result"):
+            operation_type = operation_result["fallback_result"].get("primary_operation", "unknown")
+        
+        logger.info(f"推断的操作类型: {operation_type}")
+        
+        # 2. 获取硬件信息和知识库
+        hardware_context = self.hardware_service.get_hardware_context_string()
+        knowledge_context = self.knowledge_service.get_knowledge_context_string(operation_type)
+        
+        # 3. 准备输入数据
         input_data = {
             "pytorch_code": pytorch_code,
             "operation_name": problem_info.get("operation_name", "Unknown"),
             "input_shapes": str(problem_info.get("input_shapes", [])),
-            "output_shapes": str(problem_info.get("output_shapes", []))
+            "output_shapes": str(problem_info.get("output_shapes", [])),
+            "hardware_context": hardware_context,
+            "knowledge_context": knowledge_context,
+            "operation_type": operation_type
         }
-        # print("-------------------input_data--------------------")
-        # print(input_data)
         
-        # 调用LLM
+        # 4. 调用LLM
         response = await self.chain.ainvoke(input_data)
-        # print("-------------------response--------------------")
-        # print(response)
         
-        # 解析JSON响应
-        analysis_result = self._parse_analysis_response(response)
+        # 5. 解析JSON响应
+        analysis_result = self._parse_analysis_response(response, {})
         analysis_result["analysis_type"] = "initial_analysis"
+        analysis_result["inferred_operation_type"] = operation_type
         
         return analysis_result
     
-    async def _debug_analysis(self, pytorch_code: str, previous_results: Dict[str, Any]) -> Dict[str, Any]:
-        """调试分析"""
+    async def _error_analysis(self, pytorch_code: str, previous_results: Dict[str, Any]) -> Dict[str, Any]:
+        """统一的错误分析"""
         
-        # 切换到调试分析提示
-        debug_prompt = get_analysis_prompt(is_initial=False)
-        debug_chain = debug_prompt | self.llm | StrOutputParser()
+        # 1. 推断操作类型（从之前的代码）
+        previous_code = previous_results.get("generated_code", "")
+        operation_result = await self.operation_service.infer_operation_type(previous_code)
         
-        # 准备输入数据
+        operation_type = "unknown"
+        if operation_result.get("success"):
+            operation_type = operation_result["result"].get("primary_operation", "unknown")
+        
+        # 2. 获取上下文信息
+        hardware_context = self.hardware_service.get_hardware_context_string()
+        knowledge_context = self.knowledge_service.get_knowledge_context_string(operation_type)
+        
+        # 3. 使用错误分析提示
+        error_analysis_prompt = get_error_analysis_prompt()
+        error_analysis_chain = error_analysis_prompt | self.llm | StrOutputParser()
+        
+        # 4. 准备输入数据
+        error_info = previous_results.get("error_info", "")
+        performance_data = previous_results.get("performance_info", {})
+        
         input_data = {
-            "pytorch_code": pytorch_code,
-            "previous_code": previous_results.get("generated_code", ""),
-            "error_info": previous_results.get("error_info", ""),
-            "performance_info": json.dumps(previous_results.get("performance_info", {}), indent=2)
+            "error_info": f"{error_info}\n\n{hardware_context}\n\n{knowledge_context}",
+            "code_context": previous_code,
+            "performance_data": json.dumps(performance_data, indent=2)
         }
         
-        # 调用LLM
-        response = await debug_chain.ainvoke(input_data)
+        # 5. 调用LLM
+        response = await error_analysis_chain.ainvoke(input_data)
         
-        # 解析JSON响应
-        analysis_result = self._parse_analysis_response(response)
-        analysis_result["analysis_type"] = "debug_analysis"
+        # 6. 解析响应
+        analysis_result = self._parse_analysis_response(response, previous_results)
+        analysis_result["analysis_type"] = "error_analysis"
+        analysis_result["operation_type"] = operation_type
         
         return analysis_result
+    
+    def get_operation_recommendations(self, operation_type: str) -> Dict[str, Any]:
+        """获取操作类型相关的推荐配置"""
+        hardware_recommendations = self.hardware_service.get_optimization_recommendations(operation_type)
+        knowledge = self.knowledge_service.get_knowledge(operation_type)
+        
+        recommendations = {
+            "hardware_optimizations": hardware_recommendations,
+            "implementation_patterns": knowledge.implementation_patterns if knowledge else [],
+            "performance_considerations": knowledge.performance_considerations if knowledge else []
+        }
+        
+        return recommendations
     
     async def analyze_error_intelligently(self, error_info: str, code_context: str, 
-                                        performance_data: Dict[str, Any] = None) -> Dict[str, Any]:
-        """智能错误分析 - 硬件感知的深度分析"""
+                                        performance_data: Dict[str, Any], pytorch_code: str = "") -> Dict[str, Any]:
+        """智能错误分析 - 统一接口"""
         try:
-            error_analysis_prompt = get_error_analysis_prompt()
-            error_analysis_chain = error_analysis_prompt | self.llm | StrOutputParser()
-            
-            # 获取硬件信息
-            hardware_info = self._get_hardware_info()
-            
-            # 获取知识库信息
-            operation_type = self._infer_operation_type(code_context)
-            knowledge_context = self._get_knowledge_context(operation_type)
-            
-            input_data = {
-                "error_info": f"{error_info}\n\n{hardware_info}\n\n{knowledge_context}",
-                "code_context": code_context,
-                "performance_data": json.dumps(performance_data or {}, indent=2)
+            # 构建previous_results格式以复用现有逻辑
+            previous_results = {
+                "generated_code": code_context,
+                "error_info": error_info,
+                "performance_info": performance_data
             }
             
-            response = await error_analysis_chain.ainvoke(input_data)
-            analysis_result = self._parse_analysis_response(response)
-            analysis_result["analysis_type"] = "intelligent_error_analysis"
+            # 调用现有的错误分析方法
+            result = await self._error_analysis(pytorch_code, previous_results)
             
             return {
                 "success": True,
-                "result": analysis_result
+                "result": result
             }
             
         except Exception as e:
             logger.error(f"智能错误分析失败: {e}")
             return {
                 "success": False,
-                "error": str(e)
-            }
-    
-    def _get_hardware_info(self) -> str:
-        """获取硬件信息"""
-        try:
-            import torch
-            if torch.cuda.is_available():
-                device = torch.cuda.current_device()
-                props = torch.cuda.get_device_properties(device)
-                device_info = {
-                    "name": props.name,
-                    "compute_capability": f"{props.major}.{props.minor}",
-                    "memory_size": f"{props.total_memory / 1024**3:.1f}GB",
-                    "sm_count": props.multi_processor_count
+                "error": str(e),
+                "result": {
+                    "analysis_type": "error_analysis",
+                    "error_categories": ["分析失败"],
+                    "root_causes": [f"分析过程出错: {str(e)}"],
+                    "fix_recommendations": ["请检查代码和错误信息"],
+                    "implementation_guidance": {
+                        "key_optimizations": ["基本优化"],
+                        "potential_challenges": ["错误分析失败"],
+                        "triton_features": ["基本Triton功能"]
+                    }
                 }
-            else:
-                device_info = {"name": "CPU", "compute_capability": "N/A"}
-            
-            return get_hardware_context(device_info)
-        except Exception:
-            return "## 硬件信息\n无法获取硬件信息"
-    
-    def _infer_operation_type(self, code_context: str) -> str:
-        """从代码上下文推断操作类型"""
-        code_lower = code_context.lower()
-        
-        if any(pattern in code_lower for pattern in ["conv2d", "conv_relu", "conv.*relu.*bias"]):
-            return "conv2d_composite"
-        elif any(pattern in code_lower for pattern in ["matmul", "mm", "bmm", "dot"]):
-            return "matmul"
-        elif any(pattern in code_lower for pattern in ["conv", "convolution"]):
-            return "convolution"
-        elif any(pattern in code_lower for pattern in ["relu", "sigmoid", "tanh", "add", "mul"]):
-            return "elementwise"
-        elif any(pattern in code_lower for pattern in ["sum", "mean", "max", "min", "softmax"]):
-            return "reduction"
-        else:
-            return "unknown"
-    
-    def _get_knowledge_context(self, operation_type: str) -> str:
-        """获取知识库上下文"""
-        knowledge_base = {
-            "conv2d_composite": {
-                "best_practices": [
-                    "分析PyTorch模型的每个组件：Conv2D + ReLU + BiasAdd",
-                    "正确处理4D张量索引：(batch, channel, height, width)",
-                    "区分conv内置bias和额外bias参数",
-                    "确保与PyTorch nn.Conv2d的数学等价性"
-                ],
-                "common_issues": [
-                    "忽略batch维度导致索引错误",
-                    "混淆conv内置bias和额外bias",
-                    "4D张量展平和重构错误",
-                    "padding和stride计算错误"
-                ],
-                "optimization_tips": [
-                    "使用合适的BLOCK_SIZE处理输出元素",
-                    "优化内存访问模式避免bank conflicts",
-                    "正确处理边界条件和padding"
-                ]
-            },
-            "matmul": {
-                "best_practices": ["使用分块算法", "优化内存访问", "利用共享内存"],
-                "common_issues": ["分块大小不当", "内存访问不连续"],
-                "optimization_tips": ["BLOCK_SIZE平衡", "使用tl.dot"]
-            },
-            "convolution": {
-                "best_practices": ["合理分块策略", "优化卷积核访问", "处理边界条件"],
-                "common_issues": ["边界处理复杂", "内存访问不优化"],
-                "optimization_tips": ["im2col算法", "共享内存缓存"]
-            },
-            "elementwise": {
-                "best_practices": ["内存合并访问", "避免分支分歧", "向量化"],
-                "common_issues": ["mask使用不当", "BLOCK_SIZE不合理"],
-                "optimization_tips": ["BLOCK_SIZE=256/512", "使用tl.where"]
             }
-        }
-        
-        return get_knowledge_context(operation_type, {operation_type: knowledge_base.get(operation_type, {})})
     
-
-    
-    def _parse_analysis_response(self, response: str) -> Dict[str, Any]:
+    def _parse_analysis_response(self, response: str, test_results: Dict[str, Any]) -> Dict[str, Any]:
         """解析分析响应"""
         try:
             # 尝试直接解析JSON
