@@ -11,7 +11,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
 
 from ..prompts.analysis_prompts import get_analysis_prompt, get_error_analysis_prompt
-from ..services import HardwareInfoService, KnowledgeBaseService, OperationTypeService
+from ..services import HardwareInfoService, KnowledgeBaseService, OperationTypeService, PyTorchModelAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +21,15 @@ class AnalysisChain:
     def __init__(self, llm: BaseChatModel, 
                  hardware_service: Optional[HardwareInfoService] = None,
                  knowledge_service: Optional[KnowledgeBaseService] = None,
-                 operation_service: Optional[OperationTypeService] = None):
+                 operation_service: Optional[OperationTypeService] = None,
+                 pytorch_analyzer: Optional[PyTorchModelAnalyzer] = None):
         self.llm = llm
         
         # 初始化服务
         self.hardware_service = hardware_service or HardwareInfoService()
         self.knowledge_service = knowledge_service or KnowledgeBaseService()
         self.operation_service = operation_service or OperationTypeService(llm)
+        self.pytorch_analyzer = pytorch_analyzer or PyTorchModelAnalyzer()
         
         # 初始化prompt和chain
         self.prompt = get_analysis_prompt(is_initial=True)
@@ -84,11 +86,27 @@ class AnalysisChain:
         
         logger.info(f"推断的操作类型: {operation_type}")
         
-        # 2. 获取硬件信息和知识库
+        # 2. 简化的PyTorch模型分析 (直接利用KernelBench信息)
+        pytorch_analysis = None
+        if 'pytorch_forward' in problem_info and 'test_inputs' in problem_info:
+            try:
+                pytorch_analysis = self.pytorch_analyzer.analyze_from_benchmark(
+                    problem_info['pytorch_forward'], 
+                    problem_info['test_inputs']
+                )
+                if pytorch_analysis.get("success"):
+                    logger.info(f"PyTorch分析成功: 目标输出形状 {pytorch_analysis['target_output_shape']}")
+                else:
+                    logger.warning(f"PyTorch分析失败: {pytorch_analysis.get('error')}")
+            except Exception as e:
+                logger.warning(f"PyTorch分析异常: {e}")
+                pytorch_analysis = None
+        
+        # 3. 获取硬件信息和知识库
         hardware_context = self.hardware_service.get_hardware_context_string()
         knowledge_context = self.knowledge_service.get_knowledge_context_string(operation_type)
         
-        # 3. 准备输入数据
+        # 4. 准备输入数据 (包含PyTorch分析结果)
         input_data = {
             "pytorch_code": pytorch_code,
             "operation_name": problem_info.get("operation_name", "Unknown"),
@@ -99,6 +117,16 @@ class AnalysisChain:
             "operation_type": operation_type
         }
         
+        # 添加PyTorch分析结果到输入数据
+        if pytorch_analysis and pytorch_analysis.get("success"):
+            input_data["pytorch_analysis"] = pytorch_analysis["analysis_summary"]
+            input_data["target_output_shape"] = str(pytorch_analysis["target_output_shape"])
+            input_data["pytorch_parameters"] = str(pytorch_analysis.get("layer_parameters", {}))
+        else:
+            input_data["pytorch_analysis"] = "PyTorch分析不可用，请仔细分析代码中的层参数"
+            input_data["target_output_shape"] = "请根据PyTorch代码计算输出形状"
+            input_data["pytorch_parameters"] = "请使用PyTorch层的默认参数"
+        
         # 4. 调用LLM
         response = await self.chain.ainvoke(input_data)
         
@@ -106,6 +134,10 @@ class AnalysisChain:
         analysis_result = self._parse_analysis_response(response, {})
         analysis_result["analysis_type"] = "initial_analysis"
         analysis_result["inferred_operation_type"] = operation_type
+        
+        # 6. 添加PyTorch分析结果到返回数据
+        if pytorch_analysis and pytorch_analysis.get("success"):
+            analysis_result["pytorch_analysis"] = pytorch_analysis
         
         return analysis_result
     

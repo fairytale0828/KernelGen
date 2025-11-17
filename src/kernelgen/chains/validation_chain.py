@@ -10,7 +10,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
 
-from ..prompts.validation_prompts import get_validation_prompt
+from ..prompts.validation_prompts import get_validation_prompt, get_performance_optimization_prompt
 from ..services import CodeValidationService
 
 logger = logging.getLogger(__name__)

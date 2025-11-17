@@ -21,23 +21,22 @@ INITIAL_GENERATION_PROMPT = PromptTemplate(
 3. `Model`类: 实现了要转换为Triton的算子逻辑
 4. 你需要实现与Model.forward()等价的Triton kernel
 
-## ⚠️ PyTorch层默认参数 (关键信息)
+## ⚠️ PyTorch层默认参数指南 (关键信息)
 **必须使用PyTorch层的实际默认参数，不要假设！**
 
 ### 常见PyTorch层默认参数：
-- **nn.Conv2d**: padding=0, stride=1, dilation=1, groups=1, bias=True
-  - ⚠️ 默认padding=0会使输出尺寸缩小！
-  - 输出尺寸 = (input_size + 2*padding - kernel_size) // stride + 1
-- **nn.Linear**: bias=True
-- **nn.BatchNorm2d**: eps=1e-5, momentum=0.1, affine=True
-- **nn.ReLU**: inplace=False
-- **nn.MaxPool2d**: padding=0, stride=kernel_size, dilation=1
+- **nn.Conv2d(in_ch, out_ch, kernel_size)**: padding=0, stride=1, dilation=1, bias=True
+  - ⚠️ 默认padding=0会使输出尺寸缩小: output_size = (input_size - kernel_size + 1)
+- **nn.Linear(in_features, out_features)**: bias=True
+- **nn.BatchNorm2d(num_features)**: eps=1e-5, momentum=0.1, affine=True
+- **nn.ReLU()**: inplace=False
+- **nn.MaxPool2d(kernel_size)**: padding=0, stride=kernel_size
 
-### 🎯 关键原则：
-1. **输出形状必须与PyTorch模型完全一致**
-2. **不要假设padding会保持尺寸不变**
-3. **仔细分析PyTorch代码中的层定义**
-4. **如有疑问，优先使用PyTorch默认值**
+### 🎯 输出形状计算原则：
+1. **Conv2d**: output_size = (input_size + 2*padding - dilation*(kernel_size-1) - 1) // stride + 1
+2. **Linear**: output_shape = [batch_size, out_features]
+3. **ElementWise操作**: 保持输入形状不变
+4. **Pool操作**: 根据kernel_size和stride计算
 
 ## Triton函数接口设计原则
 - 必须仔细分析PyTorch模型的参数结构，确定Triton函数需要的所有参数
@@ -51,20 +50,31 @@ INITIAL_GENERATION_PROMPT = PromptTemplate(
 3. **设计函数签名**：确保Triton函数接收所有必要参数
 4. **保证数值等价**：使用相同参数确保计算结果一致
 
+## 🔍 PyTorch模型分析步骤：
+1. **检查Model.__init__()**: 查看层定义和参数设置
+2. **分析Model.forward()**: 理解计算流程和操作顺序
+3. **验证输出形状**: 确保理解每步的形状变化
+4. **提取真实参数**: 使用PyTorch层的实际默认值，不要猜测
+
 ## 架构设计
 {architecture_design}
 
 ## 实现指导
 {implementation_guidance}
 
-## 完整Triton实现模式（必须包含kernel和wrapper函数）
+## 🎯 统一命名规则的Triton实现模式（必须包含kernel和wrapper函数）
+**重要：使用统一的函数命名规则**
+- **@triton.jit函数**: 必须命名为 `kernel`
+- **wrapper函数**: 必须命名为 `kernel_wrapper`
+
 ```python
 import torch
 import triton
 import triton.language as tl
 
 @triton.jit
-def example_kernel(x_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+def kernel(x_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+    \"\"\"Triton kernel函数 - 必须命名为'kernel'\"\"\"
     pid = tl.program_id(axis=0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
@@ -74,8 +84,8 @@ def example_kernel(x_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     result = x  # 替换为实际计算
     tl.store(output_ptr + offsets, result, mask=mask)
 
-def triton_example(x: torch.Tensor):
-    \"\"\"Wrapper函数 - 必须包含\"\"\"
+def kernel_wrapper(x: torch.Tensor):
+    \"\"\"Wrapper函数 - 必须命名为'kernel_wrapper'\"\"\"
     assert x.is_cuda, "Input must be on CUDA"
     x = x.contiguous()
     output = torch.empty_like(x)
@@ -84,7 +94,7 @@ def triton_example(x: torch.Tensor):
     BLOCK_SIZE = 1024
     grid = lambda meta: ((n_elements + meta["BLOCK_SIZE"] - 1) // meta["BLOCK_SIZE"],)
     
-    example_kernel[grid](x, output, n_elements, BLOCK_SIZE=BLOCK_SIZE)
+    kernel[grid](x, output, n_elements, BLOCK_SIZE=BLOCK_SIZE)
     return output
 
 # 注意：不要生成测试函数！
@@ -106,19 +116,13 @@ def triton_example(x: torch.Tensor):
 - **索引计算**：正确计算4D张量的batch, channel, height, width索引
 - **内存布局**：考虑NCHW格式的内存访问模式
 
-## ⚠️ Conv2D关键注意事项：
-1. **检查PyTorch Conv2d定义**：nn.Conv2d(in_ch, out_ch, kernel_size) 默认padding=0
-2. **输出尺寸计算**：output_size = (input_size - kernel_size + 1) 当padding=0时
-3. **不要假设保持尺寸**：只有padding=(kernel_size-1)//2时才保持尺寸
-4. **验证输出形状**：确保与PyTorch输出形状完全匹配
-
 请提供以下结果（JSON格式）:
 
 ```json
 {{
     "kernel_code": "完整的Triton实现代码，只包含kernel函数和wrapper函数，不包含测试函数",
-    "kernel_name": "kernel函数名称",
-    "wrapper_name": "wrapper函数名称",
+    "kernel_name": "kernel",
+    "wrapper_name": "kernel_wrapper",
     "launch_config": {{
         "grid_function": "网格配置函数代码",
         "block_sizes": "推荐的块大小配置"
@@ -170,12 +174,12 @@ FIX_GENERATION_PROMPT = PromptTemplate(
 3. **索引计算**: 所有索引必须是标量或正确维度的张量
 4. **内存访问**: 指针运算必须正确，避免越界访问
 
-## 修复要求
-1. **严格遵守Triton语法约束**，特别是网格维度和mask类型限制
-2. 修复所有识别出的编译错误
-3. 简化复杂的索引计算，确保维度匹配
-4. 包含所有必要的导入语句（import torch, import triton等）
-5. 保持kernel的核心功能不变
+## 🎯 渐进式改进要求 - 如无必要勿增实体
+1. **最小化修改原则**：在现有代码基础上进行最小必要的修改
+2. **保持现有结构**：不改变核心算法设计和网格配置
+3. **错误修复优先**：专注于修复明确的编译错误和语法问题
+4. **避免重新设计**：不要重写或大幅修改现有的工作代码
+5. **性能回归防护**：确保修改不会导致性能显著下降
 
 请提供以下修复结果（JSON格式）:
 

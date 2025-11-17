@@ -46,16 +46,17 @@ class OrchestrationChain:
         self.config = config
         
         # 初始化服务层
-        from ..services import HardwareInfoService, KnowledgeBaseService, OperationTypeService, CodeValidationService
+        from ..services import HardwareInfoService, KnowledgeBaseService, OperationTypeService, CodeValidationService, PyTorchModelAnalyzer
         
         hardware_service = HardwareInfoService()
         knowledge_service = KnowledgeBaseService()
         operation_service = OperationTypeService(llm)
         validation_service = CodeValidationService()
+        pytorch_analyzer = PyTorchModelAnalyzer()
         
         # 初始化各个链，注入服务依赖
         self.analysis_chain = AnalysisChain(
-            llm, hardware_service, knowledge_service, operation_service
+            llm, hardware_service, knowledge_service, operation_service, pytorch_analyzer
         )
         self.generation_chain = GenerationChain(
             llm, hardware_service, knowledge_service, operation_service, validation_service
@@ -188,16 +189,19 @@ class OrchestrationChain:
             print("分析阶段...")
             
             if iteration == 1:
-                # 首次迭代：分析PyTorch代码
+                # 首次迭代：分析PyTorch代码 (直接利用KernelBench提供的信息)
+                enhanced_problem_info = problem_info.copy()
+                enhanced_problem_info['test_inputs'] = test_inputs
+                enhanced_problem_info['pytorch_forward'] = pytorch_forward
+                
                 analysis_result = await self.analysis_chain.analyze_operation(
                     pytorch_code=problem_info["pytorch_code"],
-                    problem_info=problem_info,
+                    problem_info=enhanced_problem_info,
                     iteration=1
                 )
                 # 缓存操作类型，避免后续重复推断
                 if analysis_result.get("success"):
                     self._operation_type_cache = analysis_result["result"].get("inferred_operation_type", "unknown")
-                    logger.info(f"缓存操作类型: {self._operation_type_cache}")
             else:
                 # 后续迭代：智能错误分析（使用缓存的操作类型）
                 previous_results = self._prepare_previous_results()
@@ -245,7 +249,9 @@ class OrchestrationChain:
                     pytorch_code=problem_info["pytorch_code"],
                     current_code=previous_code,
                     error_analysis=analysis_data,
-                    cached_operation_type=self._operation_type_cache  # 使用缓存避免重复推断
+                    cached_operation_type=self._operation_type_cache,  # 使用缓存避免重复推断
+                    best_speedup=self.best_speedup,  # 传入最佳性能
+                    iteration=iteration  # 传入当前迭代次数
                 )
             
             result.generation_result = generation_result
@@ -278,14 +284,14 @@ class OrchestrationChain:
             
             # 记录性能结果
             if performance_result:
-                # # 准备额外的指标信息，包括错误详情
-                # additional_metrics = {}
-                # if "error" in performance_result:
-                #     additional_metrics["error"] = performance_result["error"]
-                # if "detailed_error" in performance_result:
-                #     additional_metrics["detailed_error"] = performance_result["detailed_error"]
-                # if "max_diff" in performance_result:
-                #     additional_metrics["max_diff"] = performance_result["max_diff"]
+                # 准备额外的指标信息，包括错误详情
+                additional_metrics = {}
+                if "error" in performance_result:
+                    additional_metrics["error"] = performance_result["error"]
+                if "detailed_error" in performance_result:
+                    additional_metrics["detailed_error"] = performance_result["detailed_error"]
+                if "max_diff" in performance_result:
+                    additional_metrics["max_diff"] = performance_result["max_diff"]
                 
                 iteration_logger.log_performance_result(
                     iteration,
@@ -293,7 +299,7 @@ class OrchestrationChain:
                     performance_result.get("pytorch_time", 0),
                     performance_result.get("speedup", 0),
                     performance_result.get("correctness", False),
-                    # additional_metrics
+                    additional_metrics
                 )
             
             # 4. 验证阶段
@@ -441,11 +447,26 @@ class OrchestrationChain:
         return previous_results
     
     def _get_previous_code(self) -> str:
-        """获取上次生成的代码"""
+        """获取用于改进的基础代码 - 渐进式改进策略"""
         if not self.iteration_history:
             return ""
         
         last_iteration = self.iteration_history[-1]
+        
+        # 🎯 渐进式改进：如果上次失败或性能严重退化，回到最佳版本
+        if self.best_result and self.best_speedup > 0:
+            # 如果上次迭代失败，使用最佳版本
+            if not last_iteration.success:
+                logger.info(f"上次迭代失败，使用最佳版本 (加速比: {self.best_speedup:.2f}x)")
+                return self.best_result.final_code or ""
+            
+            # 如果性能严重退化（低于最佳版本70%），使用最佳版本
+            if (last_iteration.performance_metrics and 
+                last_iteration.performance_metrics.get("speedup", 0) < self.best_speedup * 0.7):
+                logger.info(f"性能严重退化，回到最佳版本 (加速比: {self.best_speedup:.2f}x)")
+                return self.best_result.final_code or ""
+        
+        # 否则使用上次的代码进行渐进改进
         return last_iteration.final_code or ""
     
     def _get_previous_errors(self) -> str:

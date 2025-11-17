@@ -111,13 +111,16 @@ class PerformanceBenchmarkTool(BaseTool):
             # 编译Triton kernel
             triton_func = self.benchmark.compile_and_load_kernel(kernel_code)
             if not triton_func:
+                # 尝试获取更详细的编译错误信息
+                compilation_error = self._get_detailed_compilation_error(kernel_code)
                 return {
                     "success": False,
-                    "error": "Triton kernel编译失败",
+                    "error": f"Triton kernel编译失败: {compilation_error}",
                     "correctness": False,
                     "speedup": 0.0,
                     "pytorch_time": pytorch_time,
-                    "triton_time": 0.0
+                    "triton_time": 0.0,
+                    "detailed_error": compilation_error
                 }
             
             # 正确性测试
@@ -251,9 +254,8 @@ class PerformanceBenchmarkTool(BaseTool):
                     logger.error(f"输出类型不匹配: PyTorch {type(pytorch_result)} vs Triton {type(triton_result)}")
                 
             except Exception as e:
-                # logger.error(f"正确性检查执行失败: {e}")
                 import traceback
-                # logger.error(f"详细错误信息:\n{traceback.format_exc()}")
+                detailed_error = traceback.format_exc()
                 return {
                     "success": False,
                     "error": f"正确性检查失败: {e}",
@@ -261,7 +263,7 @@ class PerformanceBenchmarkTool(BaseTool):
                     "speedup": 0.0,
                     "pytorch_time": pytorch_time,
                     "triton_time": 0.0,
-                    # "detailed_error": traceback.format_exc()
+                    "detailed_error": detailed_error
                 }
             
             # 性能测试
@@ -399,6 +401,49 @@ class PerformanceBenchmarkTool(BaseTool):
             description += "+3D批量操作"
         
         return rtol, atol, description
+    
+    def _get_detailed_compilation_error(self, kernel_code: str) -> str:
+        """获取详细的编译错误信息"""
+        try:
+            import tempfile
+            import os
+            import importlib.util
+            import traceback
+            
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(kernel_code)
+                temp_file = f.name
+            
+            try:
+                # 尝试编译，捕获详细错误
+                spec = importlib.util.spec_from_file_location("test_kernel", temp_file)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                return "编译成功但无法找到可调用函数"
+                
+            except Exception as e:
+                # 捕获详细的编译错误
+                error_details = traceback.format_exc()
+                
+                # 尝试解析错误行号
+                error_lines = []
+                for line in error_details.split('\n'):
+                    if 'File' in line and 'line' in line:
+                        error_lines.append(line.strip())
+                    elif line.strip() and not line.startswith('  '):
+                        error_lines.append(line.strip())
+                
+                return f"{str(e)}\n详细信息: {' | '.join(error_lines[-3:])}"
+                
+            finally:
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
+                    
+        except Exception as e:
+            return f"无法获取详细错误信息: {str(e)}"
 
 def create_performance_tools(config: Dict[str, Any]) -> list:
     """创建性能测试工具列表"""

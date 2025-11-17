@@ -6,7 +6,7 @@ from langchain_core.prompts import PromptTemplate
 
 # 初始分析提示模板
 INITIAL_ANALYSIS_PROMPT = PromptTemplate(
-    input_variables=["pytorch_code", "operation_name", "input_shapes", "output_shapes", "hardware_context", "knowledge_context", "operation_type"],
+    input_variables=["pytorch_code", "operation_name", "input_shapes", "output_shapes", "hardware_context", "knowledge_context", "operation_type", "pytorch_analysis", "target_output_shape", "pytorch_parameters"],
     template="""你是一个专业的GPU kernel分析专家。请分析以下PyTorch操作并设计Triton kernel架构。
 
 ## 操作信息
@@ -36,6 +36,15 @@ INITIAL_ANALYSIS_PROMPT = PromptTemplate(
 
 ## 推断的操作类型
 {operation_type}
+
+## 🔍 PyTorch模型动态分析结果
+{pytorch_analysis}
+
+### 目标输出形状 (必须匹配)
+{target_output_shape}
+
+### PyTorch层参数信息
+{pytorch_parameters}
 
 ## 硬件环境信息
 {hardware_context}

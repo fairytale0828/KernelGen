@@ -78,7 +78,9 @@ class GenerationChain:
     
     async def fix_code_with_intelligent_analysis(self, pytorch_code: str, current_code: str, 
                                                 error_analysis: Dict[str, Any], 
-                                                cached_operation_type: str = None) -> Dict[str, Any]:
+                                                cached_operation_type: str = None,
+                                                best_speedup: float = 0.0,
+                                                iteration: int = 1) -> Dict[str, Any]:
         """统一的智能代码修复接口"""
         try:
             # 1. 使用缓存的操作类型或推断操作类型
@@ -99,10 +101,29 @@ class GenerationChain:
             intelligent_fix_prompt = get_intelligent_fix_prompt()
             intelligent_fix_chain = intelligent_fix_prompt | self.llm | StrOutputParser()
             
+            # 🎯 添加渐进式改进指导
+            improvement_guidance = f"""
+## 🎯 渐进式改进指导 - 最小化修改原则
+
+**核心原则**: 在现有代码基础上进行最小化修改
+- 保持现有的算法结构和设计
+- 只修复明确的错误，不重新设计
+- 优先修复编译错误和语法问题
+
+**当前最佳性能**: {best_speedup:.2f}x (迭代 {iteration})
+**改进目标**: 小幅提升，避免性能回归
+
+## ❌ 严格禁止
+- 改变网格维度配置
+- 添加调试功能 (tl.debug_barrier等)
+- 重新设计核心算法
+- 添加复杂的共享内存优化
+"""
+            
             input_data = {
                 "pytorch_code": pytorch_code,
                 "current_code": current_code,
-                "error_analysis": f"{json.dumps(error_analysis, indent=2)}\n\n{hardware_context}\n\n{knowledge_context}"
+                "error_analysis": f"{json.dumps(error_analysis, indent=2)}\n\n{hardware_context}\n\n{knowledge_context}\n\n{improvement_guidance}"
             }
             
             # 4. 调用LLM生成修复代码
