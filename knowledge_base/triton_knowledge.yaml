@@ -1,0 +1,148 @@
+# Triton Kernel 知识库
+# 这个文件包含了不同操作类型的最佳实践、优化技巧和常见问题
+
+operations:
+  matmul:
+    best_practices:
+      - "使用分块算法优化内存访问"
+      - "利用共享内存缓存数据"
+      - "确保内存合并访问"
+      - "平衡计算和内存访问"
+    
+    optimization_tips:
+      - "选择合适的BLOCK_SIZE平衡并行度和内存使用"
+      - "使用tl.dot进行高效矩阵乘法"
+      - "考虑使用混合精度计算"
+      - "优化数据重用模式"
+    
+    common_issues:
+      - "分块大小不当导致性能下降"
+      - "内存访问不连续"
+      - "共享内存使用不当"
+      - "线程块间负载不均衡"
+    
+    implementation_patterns:
+      - "标准分块矩阵乘法"
+      - "流水线化计算"
+      - "双缓冲技术"
+    
+    performance_considerations:
+      - "内存带宽利用率"
+      - "计算强度优化"
+      - "寄存器使用效率"
+
+  conv2d:
+    best_practices:
+      - "使用简单直接的实现，避免过度复杂化"
+      - "每个线程处理一个输出元素"
+      - "正确处理4D张量索引"
+      - "确保与PyTorch Conv2D的数学等价性"
+    
+    optimization_tips:
+      - "合理设计grid和block大小"
+      - "优化4D张量内存访问"
+      - "使用适当的数值精度"
+      - "考虑卷积核大小对性能的影响"
+    
+    common_issues:
+      - "4D张量索引计算错误"
+      - "边界条件处理不当"
+      - "内存访问模式不优化"
+      - "padding和stride计算错误"
+    
+    implementation_patterns:
+      - "直接卷积实现"
+      - "im2col算法"
+      - "Winograd算法"
+    
+    performance_considerations:
+      - "内存访问局部性"
+      - "计算与内存访问平衡"
+      - "缓存友好的数据布局"
+
+  elementwise:
+    best_practices:
+      - "内存合并访问"
+      - "避免分支分歧"
+      - "向量化操作"
+      - "简单的线程到元素映射"
+    
+    optimization_tips:
+      - "使用合适的BLOCK_SIZE(256/512)"
+      - "使用tl.where避免分支"
+      - "优化mask使用"
+      - "考虑内存带宽限制"
+    
+    common_issues:
+      - "mask使用不当"
+      - "BLOCK_SIZE不合理"
+      - "分支导致性能下降"
+      - "内存访问不连续"
+    
+    implementation_patterns:
+      - "标准elementwise模式"
+      - "向量化处理"
+      - "融合多个elementwise操作"
+    
+    performance_considerations:
+      - "内存带宽限制"
+      - "线程利用率"
+      - "指令级并行"
+
+  reduction:
+    best_practices:
+      - "使用树形归约算法"
+      - "利用共享内存进行局部归约"
+      - "处理不同的归约维度"
+      - "考虑数值稳定性"
+    
+    optimization_tips:
+      - "选择合适的归约策略"
+      - "使用warp-level原语"
+      - "优化最后的全局归约"
+      - "处理边界条件"
+    
+    common_issues:
+      - "归约算法不正确"
+      - "数值精度问题"
+      - "线程同步问题"
+      - "边界处理复杂"
+    
+    implementation_patterns:
+      - "分层归约"
+      - "warp归约"
+      - "块级归约"
+    
+    performance_considerations:
+      - "归约效率"
+      - "内存访问模式"
+      - "线程同步开销"
+
+  attention:
+    best_practices:
+      - "分块处理长序列"
+      - "优化softmax计算"
+      - "处理注意力掩码"
+      - "考虑数值稳定性"
+    
+    optimization_tips:
+      - "使用FlashAttention算法"
+      - "优化内存访问模式"
+      - "分块计算注意力权重"
+      - "使用混合精度"
+    
+    common_issues:
+      - "内存使用过多"
+      - "数值不稳定"
+      - "序列长度处理"
+      - "掩码处理复杂"
+    
+    implementation_patterns:
+      - "FlashAttention"
+      - "分块注意力"
+      - "稀疏注意力"
+    
+    performance_considerations:
+      - "内存效率"
+      - "计算复杂度"
+      - "序列长度扩展性"

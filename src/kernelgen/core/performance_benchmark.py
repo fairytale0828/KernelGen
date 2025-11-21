@@ -36,17 +36,28 @@ class TritonPerformanceBenchmark:
         if device == "cuda" and not torch.cuda.is_available():
             logger.warning("CUDA不可用，切换到CPU模式")
             self.device = "cpu"
+        
+        # 记录TF32设置状态
+        if device == "cuda":
+            tf32_matmul = torch.backends.cuda.matmul.allow_tf32
+            tf32_cudnn = torch.backends.cudnn.allow_tf32
     
     def compile_and_load_kernel(self, kernel_code: str, kernel_name: str = "test_kernel") -> Optional[Any]:
         """
-        编译并加载Triton kernel
+        编译并加载Triton kernel - 改进版本
+        
+        优先选择wrapper函数而不是@triton.jit函数，确保可以直接调用。
+        选择逻辑：
+        1. 优先选择包含'triton_', 'forward', 'wrapper'的函数
+        2. 确保函数有参数（不是无参数函数）
+        3. 排除@triton.jit装饰的函数和test_开头的函数
         
         Args:
-            kernel_code: Triton kernel代码
-            kernel_name: kernel名称
+            kernel_code: 完整的Triton实现代码（包含kernel、wrapper、test函数）
+            kernel_name: kernel名称（用于临时文件命名）
             
         Returns:
-            编译后的kernel函数，失败返回None
+            编译后的wrapper函数（可直接调用），失败返回None
         """
         try:
             # 创建临时文件
@@ -63,27 +74,59 @@ class TritonPerformanceBenchmark:
                 # 查找kernel函数和wrapper函数
                 kernel_func = None
                 wrapper_func = None
+                all_functions = []
+                
+                # 🎯 统一命名规则的函数选择逻辑
+                # 标准命名：@triton.jit函数='kernel', wrapper函数='kernel_wrapper'
+                # 兼容旧命名：也支持'triton_', 'forward', 'wrapper'等模式
                 
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
-                    if hasattr(attr, '__triton_jit__'):
+                    if not callable(attr) or attr_name.startswith('_') or attr_name.startswith('test_'):
+                        continue
+                    
+                    all_functions.append(attr_name)
+                    
+                    # 检查是否为@triton.jit函数
+                    if hasattr(attr, '__triton_jit__') or str(type(attr)) == "<class 'triton.runtime.jit.JITFunction'>":
                         kernel_func = attr
-                    elif callable(attr) and not attr_name.startswith('_') and attr_name != kernel_name:
-                        # 寻找wrapper函数
-                        if ('triton' in attr_name.lower() or 
-                            'wrapper' in attr_name.lower() or
-                            not hasattr(attr, '__triton_jit__')):
-                            wrapper_func = attr
+                        logger.debug(f"找到@triton.jit函数: {attr_name} (不能直接调用)")
+                    else:
+                        # 检查是否为wrapper函数
+                        try:
+                            import inspect
+                            sig = inspect.signature(attr)
+                            if len(sig.parameters) > 0:  # wrapper函数应该有参数
+                                # 🎯 统一命名规则：优先选择'kernel_wrapper'
+                                if attr_name == 'kernel_wrapper':
+                                    wrapper_func = attr
+                                    logger.debug(f"找到标准wrapper函数: {attr_name}")
+                                    break  # 找到标准命名就立即选择
+                                # 兼容旧命名模式
+                                elif any(pattern in attr_name.lower() for pattern in ['triton_', 'forward', 'wrapper']):
+                                    if wrapper_func is None:  # 只在没有找到更好的时候才选择
+                                        wrapper_func = attr
+                                        logger.debug(f"找到兼容wrapper函数: {attr_name}")
+                                # 其他有参数的函数作为备选
+                                elif wrapper_func is None:
+                                    wrapper_func = attr
+                                    logger.debug(f"候选wrapper函数: {attr_name}")
+                        except Exception as e:
+                            logger.debug(f"检查函数签名失败 {attr_name}: {e}")
                 
-                # 优先返回wrapper函数，其次是kernel函数
-                if wrapper_func:
-                    logger.debug(f"找到wrapper函数: {wrapper_func.__name__}")
-                    return wrapper_func
-                elif kernel_func:
-                    logger.debug(f"找到kernel函数: {kernel_func.__name__}")
-                    return kernel_func
+                logger.info(f"模块中的所有函数: {all_functions}")
+                
+                # 🚨 关键修复：只返回wrapper函数，绝不返回@triton.jit函数
+                selected_func = wrapper_func
+                if selected_func:
+                    func_type = "wrapper" if selected_func == wrapper_func else "kernel"
+                    logger.info(f"选择{func_type}函数: {selected_func.__name__}")
+                    return selected_func
                 else:
-                    logger.error("未找到可调用的kernel函数")
+                    logger.error("未找到可调用的wrapper函数！生成的代码可能缺少wrapper函数。")
+                    logger.error(f"可用函数: {all_functions}")
+                    if kernel_func:
+                        logger.error("找到了@triton.jit函数，但它不能直接调用。需要wrapper函数。")
                     return None
                     
             finally:
@@ -94,7 +137,10 @@ class TritonPerformanceBenchmark:
                     pass
                     
         except Exception as e:
+            # import traceback
+            # error_details = traceback.format_exc()
             logger.error(f"编译kernel失败: {str(e)}")
+            # logger.error(f"详细错误信息:\n{error_details}")
             return None
     
     def validate_kernel_syntax(self, kernel_code: str) -> Tuple[bool, str]:
@@ -184,7 +230,7 @@ class TritonPerformanceBenchmark:
                 pytorch_gflops = flops / (pytorch_time * 1e-3) / 1e9  # 转换为GFLOPS
                 triton_gflops = flops / (triton_time * 1e-3) / 1e9
                 
-                speedup = pytorch_time / triton_time if triton_time > 0 else 0
+                speedup = triton_time / pytorch_time if triton_time > 0 else 0
                 
                 results["triton_times"].append(triton_time)
                 results["pytorch_times"].append(pytorch_time)
@@ -261,7 +307,7 @@ class TritonPerformanceBenchmark:
     def benchmark_general(self, triton_func: Any, pytorch_func: Any, test_inputs: List[torch.Tensor], 
                          dtype: torch.dtype = torch.float32) -> Dict[str, Any]:
         """
-        通用性能基准测试
+        通用性能基准测试 - 适用于任何算子类型
         
         Args:
             triton_func: 编译后的Triton函数
@@ -277,7 +323,8 @@ class TritonPerformanceBenchmark:
             "pytorch_times": [],
             "speedups": [],
             "success": True,
-            "error": None
+            "error": None,
+            "has_error": False
         }
         
         try:
@@ -292,6 +339,7 @@ class TritonPerformanceBenchmark:
             if triton_time is None:
                 results["error"] = "Triton kernel执行失败"
                 results["success"] = False
+                results["has_error"] = True
                 return results
             
             speedup = pytorch_time / triton_time if triton_time > 0 else 0
@@ -299,6 +347,9 @@ class TritonPerformanceBenchmark:
             results["triton_times"].append(triton_time)
             results["pytorch_times"].append(pytorch_time)
             results["speedups"].append(speedup)
+            results["speedup"] = speedup  # 添加单个speedup字段
+            results["triton_time_ms"] = triton_time
+            results["pytorch_time_ms"] = pytorch_time
             
             logger.info(f"  PyTorch: {pytorch_time:.3f}ms")
             logger.info(f"  Triton:  {triton_time:.3f}ms")
@@ -306,6 +357,7 @@ class TritonPerformanceBenchmark:
                 
         except Exception as e:
             results["success"] = False
+            results["has_error"] = True
             results["error"] = str(e)
             logger.error(f"性能测试失败: {str(e)}")
         
@@ -313,29 +365,43 @@ class TritonPerformanceBenchmark:
     
     def _benchmark_pytorch_general(self, pytorch_func: Any, test_inputs: List[torch.Tensor]) -> float:
         """通用PyTorch性能测试"""
-        if self.device == "cuda":
-            torch.cuda.synchronize()
+        # 🔧 启用TF32优化以获得公平的性能对比
+        original_tf32_matmul = torch.backends.cuda.matmul.allow_tf32
+        original_tf32_cudnn = torch.backends.cudnn.allow_tf32
         
-        # 预热
-        for _ in range(self.warmup_runs):
-            with torch.no_grad():
-                pytorch_func(*test_inputs)
+        try:
+            # 启用TF32优化（A100等Ampere架构的标准优化）
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+            
+            # 预热
+            for _ in range(self.warmup_runs):
+                with torch.no_grad():
+                    pytorch_func(*test_inputs)
+            
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+            
+            # 基准测试
+            start_time = time.perf_counter()
+            for _ in range(self.benchmark_runs):
+                with torch.no_grad():
+                    pytorch_func(*test_inputs)
+            
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+            
+            end_time = time.perf_counter()
+            avg_time = (end_time - start_time) / self.benchmark_runs * 1000
+            return avg_time
         
-        if self.device == "cuda":
-            torch.cuda.synchronize()
-        
-        # 基准测试
-        start_time = time.perf_counter()
-        for _ in range(self.benchmark_runs):
-            with torch.no_grad():
-                pytorch_func(*test_inputs)
-        
-        if self.device == "cuda":
-            torch.cuda.synchronize()
-        
-        end_time = time.perf_counter()
-        avg_time = (end_time - start_time) / self.benchmark_runs * 1000
-        return avg_time
+        finally:
+            # 恢复原始TF32设置
+            torch.backends.cuda.matmul.allow_tf32 = original_tf32_matmul
+            torch.backends.cudnn.allow_tf32 = original_tf32_cudnn
     
     def _benchmark_triton_general(self, triton_func: Any, test_inputs: List[torch.Tensor]) -> Optional[float]:
         """通用Triton性能测试"""
