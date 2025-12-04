@@ -69,3 +69,41 @@ evaluation:
 concurrency:
   num_workers: 4  # 并发worker数量
   api_query_interval: 0.1  # API查询间隔（秒）
+
+# 多worker搜索配置
+multi_worker_search:
+  # Worker配置
+  num_workers: 4                    # 并行worker数量
+  max_rounds: 10                    # 最大搜索轮次
+  
+  # 阈值配置
+  thresholds:
+    UB: 0.8                        # 上界阈值（写入经验池）
+    LB: 0.3                        # 下界阈值（人工干预）
+    DT: 0.3                        # 退化阈值（人工干预）
+  
+  # 策略选择配置
+  strategy_selection:
+    warmup_random: true            # 预热阶段随机选择
+    top_k_ratio: 0.5              # Top-K策略比例
+    knowledge_base_weight: 0.3     # 知识库推荐权重
+  
+  # 经验池配置
+  experience_pool:
+    max_size: 100                  # 最大经验数量
+    fusion_probability: 0.1        # 融合概率
+  
+  # 知识库配置
+  knowledge_base:
+    persistence_path: "runs/knowledge_base.pkl"
+    min_samples_for_recommendation: 3
+    quality_score_weights:
+      alpha: 0.5                   # 方差惩罚权重
+      beta: 0.5                    # 成功率权重
+      gamma: 0.1                   # 覆盖范围权重
+  
+  # 资源管理
+  resource_management:
+    worker_timeout: 180            # Worker超时时间（秒）
+    max_retries: 1                 # 最大重试次数
+    enable_gpu_memory_management: true

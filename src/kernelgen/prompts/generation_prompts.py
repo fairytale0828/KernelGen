@@ -7,7 +7,12 @@ from langchain_core.prompts import PromptTemplate
 # 初始生成提示模板
 INITIAL_GENERATION_PROMPT = PromptTemplate(
     input_variables=["pytorch_code", "architecture_design", "implementation_guidance"],
+    partial_variables={"strategy_hint": ""},
     template="""你是一个专业的Triton kernel开发专家。请根据架构设计生成高性能的Triton kernel。
+
+{strategy_hint}
+
+
 
 ## PyTorch参考代码（来自KernelBench数据集）
 ```python

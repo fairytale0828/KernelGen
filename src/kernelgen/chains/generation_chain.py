@@ -37,7 +37,8 @@ class GenerationChain:
     
     async def generate_code(self, pytorch_code: str, problem_info: Dict[str, Any],
                           architecture_design: Dict[str, Any], 
-                          implementation_guidance: Dict[str, Any]) -> Dict[str, Any]:
+                          implementation_guidance: Dict[str, Any],
+                          strategy_hint: Optional[str] = None) -> Dict[str, Any]:
         """
         生成Triton kernel代码
         
@@ -46,6 +47,7 @@ class GenerationChain:
             problem_info: 问题信息
             architecture_design: 架构设计
             implementation_guidance: 实现指导
+            strategy_hint: 策略提示（可选，用于多worker搜索）
             
         Returns:
             生成结果
@@ -57,6 +59,11 @@ class GenerationChain:
                 "architecture_design": json.dumps(architecture_design, indent=2, ensure_ascii=False),
                 "implementation_guidance": json.dumps(implementation_guidance, indent=2, ensure_ascii=False)
             }
+            
+            # 如果提供了策略提示，添加到输入数据中
+            if strategy_hint:
+                input_data["strategy_hint"] = strategy_hint
+                logger.info(f"使用策略提示生成代码")
             
             # 调用LLM
             response = await self.chain.ainvoke(input_data)
